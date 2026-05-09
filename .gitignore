@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+.env.*
+!.env.example
+
+# Default DATA_DIR — ingested data lives here on a fresh checkout.
+/data/
+
+*.swp
+.DS_Store
+.idea/
+.vscode/

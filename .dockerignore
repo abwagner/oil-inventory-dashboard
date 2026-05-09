@@ -1,0 +1,27 @@
+## Build-context filter.
+
+# Docs (TDD lives here, no need in the image).
+docs/
+
+# Bytecode + venvs.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.venv/
+**/.venv/
+
+# Local env. Containers receive env via --env-file / -e flags or ENV_FILE.
+.env
+.env.*
+**/.env
+
+# IDE / VCS.
+.git/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local data dirs — these live on the bind-mount in production.
+/data/
+trading-data/

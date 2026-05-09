@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EIA Crude Oil Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --bg2: #18181b;
+    --bg3: #1e1e22;
+    --border: #2a2a2e;
+    --text: #e4e4e7;
+    --text2: #a1a1aa;
+    --text3: #71717a;
+    --blue: #3b82f6;
+    --blue2: #60a5fa;
+    --amber: #f59e0b;
+    --green: #10b981;
+    --red: #ef4444;
+    --purple: #a78bfa;
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 1.5rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1rem;
+  }
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  header h1 span { color: var(--amber); }
+  .header-controls {
+    display: flex; align-items: center; gap: 0.75rem; font-size: 13px;
+  }
+  .header-controls select, .header-controls button {
+    font-family: inherit;
+    font-size: 13px;
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .header-controls button:hover { background: var(--border); }
+  #status { color: var(--text3); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin-bottom: 1.25rem;
+  }
+  .stat-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+  }
+  .stat-label { font-size: 12px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat-value { font-size: 22px; font-weight: 600; margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+  .stat-delta { font-size: 12px; color: var(--text2); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+  .stat-delta.up { color: var(--green); }
+  .stat-delta.down { color: var(--red); }
+
+  .chart-section {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .chart-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+  .chart-title { font-size: 15px; font-weight: 500; }
+  .chart-legend {
+    display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--text3);
+  }
+  .chart-legend span { display: flex; align-items: center; gap: 5px; }
+  .legend-line { width: 16px; height: 2px; display: inline-block; }
+  .legend-dash { width: 16px; height: 0; border-top: 2px dashed; display: inline-block; }
+  .legend-dot { width: 16px; height: 0; border-top: 2px dotted; display: inline-block; }
+  .legend-fill { width: 12px; height: 10px; display: inline-block; border-radius: 2px; }
+  .chart-wrap { position: relative; height: 340px; }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+  }
+  @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .footnote { font-size: 11px; color: var(--text3); margin-top: 0.5rem; font-family: 'JetBrains Mono', monospace; }
+
+  .loading { display: flex; align-items: center; justify-content: center; height: 340px; color: var(--text3); }
+
+  /* ---- Setup banner (shown when ingest needed) ---- */
+  .setup-banner {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.85rem 1.1rem;
+    margin-bottom: 1.25rem;
+    font-size: 13px;
+  }
+  .setup-banner h3 {
+    font-size: 13px; font-weight: 600;
+    color: var(--text2);
+    margin-bottom: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .setup-row {
+    display: grid;
+    grid-template-columns: 160px 1fr auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.45rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .setup-row:last-child { border-bottom: none; }
+  .setup-row-label { font-weight: 500; font-size: 13px; }
+  .setup-row-status {
+    color: var(--text3);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .setup-row-status.empty { color: var(--amber); }
+  .setup-row-status.running { color: var(--blue2); }
+  .setup-row-status.error { color: var(--red); }
+  .setup-row-status.ok { color: var(--green); }
+  .setup-row-status.disabled { color: var(--text3); }
+  .setup-btn {
+    background: var(--blue);
+    color: white;
+    border: none;
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .setup-btn:hover { background: var(--blue2); }
+  .setup-btn:disabled { background: var(--border); color: var(--text3); cursor: not-allowed; }
+  .setup-btn.warn { background: var(--amber); }
+  .setup-btn.warn:hover { background: #fbbf24; }
+
+  .empty-state {
+    display: flex; align-items: center; justify-content: center;
+    height: 340px; flex-direction: column; gap: 0.5rem;
+    color: var(--text3); text-align: center; padding: 1rem;
+  }
+  .empty-state .empty-title { color: var(--text2); font-size: 14px; }
+  .empty-state .empty-hint { font-size: 12px; max-width: 360px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>EIA <span>Crude</span> Dashboard</h1>
+  <div class="header-controls">
+    <select id="monthsSelect" onchange="loadData()">
+      <option value="3">3 months</option>
+      <option value="6" selected>6 months</option>
+      <option value="12">12 months</option>
+      <option value="24">24 months</option>
+    </select>
+    <button onclick="refreshData()">↻ Refresh Data</button>
+    <span id="status">loading...</span>
+  </div>
+</header>
+
+<!-- Setup banner: shown when any pipeline is missing data or running ingest -->
+<div id="setupBanner" class="setup-banner" style="display:none">
+  <h3>Setup</h3>
+  <div id="setupRows"></div>
+</div>
+
+<div id="statsRow" class="stats-row"></div>
+
+<!-- Chart 1: Inventory + Exports + Production -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Inventory, exports & production</div>
+    <div class="chart-legend">
+      <span><span class="legend-line" style="background:var(--blue)"></span>Inventory (left, Mbbl)</span>
+      <span><span class="legend-dot" style="border-color:var(--green)"></span>Production (right, Mbpd)</span>
+      <span><span class="legend-dash" style="border-color:var(--amber)"></span>Exports (right, Mbpd)</span>
+    </div>
+  </div>
+  <div class="chart-wrap"><canvas id="mainChart"></canvas></div>
+</div>
+
+<!-- Chart 2 & 3 side by side -->
+<div class="grid-2">
+  <!-- Cushing -->
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="chart-title">Cushing, OK stocks</div>
+      <div class="chart-legend">
+        <span><span class="legend-line" style="background:var(--purple)"></span>Mbbl</span>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="cushingChart"></canvas></div>
+  </div>
+
+  <!-- Utilization -->
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="chart-title">Refinery utilization</div>
+      <div class="chart-legend">
+        <span><span class="legend-line" style="background:var(--blue)"></span>Current %</span>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="utilChart"></canvas></div>
+  </div>
+</div>
+
+<!-- Chart: Product inventories -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">US product inventories — gasoline & distillates</div>
+    <div class="chart-legend">
+      <span><span class="legend-line" style="background:var(--green)"></span>Gasoline (left, Mbbl)</span>
+      <span><span class="legend-dash" style="border-color:var(--red)"></span>Distillates (right, Mbbl)</span>
+    </div>
+  </div>
+  <div class="chart-wrap"><canvas id="productsChart"></canvas></div>
+</div>
+
+<!-- Chart 4: Utilization YoY -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Refinery utilization — year-over-year</div>
+    <div class="chart-legend" id="yoyLegend"></div>
+  </div>
+  <div class="chart-wrap"><canvas id="yoyChart"></canvas></div>
+</div>
+
+<!-- Section: Regional (PADD) Inventories -->
+<div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
+  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Regional <span style="color:var(--amber)">Inventories</span></h2>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="regionalSub">US crude stocks by PADD region · weekly (excl SPR) · fill = week-over-week change</p>
+</div>
+
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">PADD map</div>
+    <div class="chart-legend">
+      <span><span class="legend-fill" style="background:rgba(16,185,129,0.55)"></span>Build (WoW)</span>
+      <span><span class="legend-fill" style="background:rgba(239,68,68,0.55)"></span>Draw (WoW)</span>
+      <span><span class="legend-fill" style="background:#a78bfa"></span>Cushing hub</span>
+    </div>
+  </div>
+  <div style="display:flex; justify-content:center; padding: 4px 0 12px;">
+    <svg id="paddMap" viewBox="0 0 800 440" preserveAspectRatio="xMidYMid meet"
+         style="width:100%; max-width:760px; height:auto;"></svg>
+  </div>
+</div>
+
+<div id="regionalCards" class="stats-row"></div>
+
+<!-- Section: Global Inventories -->
+<div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
+  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Global <span style="color:var(--amber)">Inventories</span></h2>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;">EIA Short-Term Energy Outlook (STEO) monthly data · OECD commercial stocks + supply/demand balance</p>
+</div>
+
+<div id="globalStats" class="stats-row"></div>
+
+<!-- Chart 5: OECD stocks: US vs Other OECD -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">OECD commercial stocks — US vs rest of OECD</div>
+    <div class="chart-legend">
+      <span><span class="legend-line" style="background:var(--blue)"></span>US (left, Mbbl)</span>
+      <span><span class="legend-dash" style="border-color:var(--red)"></span>Other OECD (right, Mbbl)</span>
+    </div>
+  </div>
+  <div class="chart-wrap"><canvas id="oecdChart"></canvas></div>
+</div>
+
+<!-- Chart 6 & 7 side by side -->
+<div class="grid-2">
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="chart-title">World supply vs demand</div>
+      <div class="chart-legend">
+        <span><span class="legend-line" style="background:var(--green)"></span>Production</span>
+        <span><span class="legend-dash" style="border-color:var(--amber)"></span>Consumption</span>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="supplyDemandChart"></canvas></div>
+  </div>
+
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="chart-title">World inventory change</div>
+      <div class="chart-legend">
+        <span><span class="legend-fill" style="background:rgba(16,185,129,0.3)"></span>Build</span>
+        <span><span class="legend-fill" style="background:rgba(239,68,68,0.3)"></span>Draw</span>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="invChangeChart"></canvas></div>
+  </div>
+</div>
+
+<!-- Section: Tanker Positions -->
+<div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
+  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Tanker <span style="color:var(--amber)">Positions</span></h2>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="shipsSub">Global crude tanker positions from AIS · positions only — no load state, voyage intent, or identity verification (TDD §9.7)</p>
+</div>
+
+<div id="shipsStats" class="stats-row"></div>
+
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Global tanker map</div>
+    <div class="chart-legend">
+      <span><span class="legend-fill" style="background:#3b82f6; border-radius:50%"></span>AIS Crude (80)</span>
+      <span><span class="legend-fill" style="background:#a78bfa; border-radius:50%"></span>AIS Other tanker (89)</span>
+      <span><span class="legend-fill" style="background:#71717a; border-radius:50%"></span>AIS Hazmat (81–88)</span>
+      <span><span class="legend-fill" style="background:#f59e0b; border-radius:50%"></span>SAR detection (radar)</span>
+      <span style="color:var(--text2)">larger AIS dot = underway (SOG &gt; 0.5 kn)</span>
+    </div>
+  </div>
+  <div style="display:flex; justify-content:center; padding: 4px 0 12px;">
+    <svg id="shipMap" viewBox="0 0 960 480" preserveAspectRatio="xMidYMid meet"
+         style="width:100%; max-width:960px; height:auto; background:#0e0e10;"></svg>
+  </div>
+</div>
+
+<div class="footnote" id="footNote"></div>
+
+<script>
+// ---- State ----
+let charts = {};
+let rawData = [];
+
+// ---- Helpers ----
+function fmt(v, dec=1) { return v != null ? v.toFixed(dec) : '–'; }
+function fmtDate(d) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const [y,m,day] = d.split('-');
+  return months[parseInt(m,10)-1] + ' ' + parseInt(day,10);
+}
+function delta(curr, prev) {
+  if (curr == null || prev == null) return { text: '–', cls: '' };
+  const d = curr - prev;
+  const sign = d >= 0 ? '+' : '';
+  return { text: sign + d.toFixed(2), cls: d >= 0 ? 'up' : 'down' };
+}
+
+// ---- Chart defaults ----
+Chart.defaults.color = '#71717a';
+Chart.defaults.borderColor = '#2a2a2e';
+Chart.defaults.font.family = "'DM Sans', sans-serif";
+Chart.defaults.font.size = 11;
+
+const gridOpts = { color: 'rgba(255,255,255,0.05)' };
+const noGrid = { display: false };
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+// ---- Stats Row ----
+function renderStats(data) {
+  const last = data[data.length - 1];
+  const prev = data.length > 1 ? data[data.length - 2] : null;
+  const first = data[0];
+
+  const cards = [
+    { label: 'Crude inv', value: fmt(last.us_stocks_mbbl, 1) + ' Mbbl', delta: delta(last.us_stocks_mbbl, prev?.us_stocks_mbbl) },
+    { label: 'Cushing', value: fmt(last.cushing_mbbl, 1) + ' Mbbl', delta: delta(last.cushing_mbbl, prev?.cushing_mbbl) },
+    { label: 'Gasoline', value: fmt(last.gasoline_mbbl, 1) + ' Mbbl', delta: delta(last.gasoline_mbbl, prev?.gasoline_mbbl) },
+    { label: 'Distillates', value: fmt(last.distillate_mbbl, 1) + ' Mbbl', delta: delta(last.distillate_mbbl, prev?.distillate_mbbl) },
+    { label: 'Production', value: fmt(last.production_mbpd, 2) + ' Mbpd', delta: delta(last.production_mbpd, prev?.production_mbpd) },
+    { label: 'Exports', value: fmt(last.exports_mbpd, 2) + ' Mbpd', delta: delta(last.exports_mbpd, prev?.exports_mbpd) },
+    { label: 'Utilization', value: fmt(last.utilization_pct, 1) + '%', delta: delta(last.utilization_pct, prev?.utilization_pct) },
+  ];
+
+  document.getElementById('statsRow').innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-delta ${c.delta.cls}">${c.delta.text} wk</div>
+    </div>
+  `).join('');
+}
+
+// ---- Main Chart: Inventory + Exports + Production ----
+function renderMainChart(data) {
+  destroyChart('main');
+  const labels = data.map(d => fmtDate(d.date));
+  charts.main = new Chart(document.getElementById('mainChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Inventory (Mbbl)', data: data.map(d => d.us_stocks_mbbl),
+          borderColor: '#3b82f6', backgroundColor: '#3b82f6',
+          yAxisID: 'y', borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15
+        },
+        {
+          label: 'Production (Mbpd)', data: data.map(d => d.production_mbpd),
+          borderColor: '#10b981', backgroundColor: '#10b981',
+          yAxisID: 'y1', borderWidth: 1.5, borderDash: [2,3], pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15
+        },
+        {
+          label: 'Exports (Mbpd)', data: data.map(d => d.exports_mbpd),
+          borderColor: '#f59e0b', backgroundColor: '#f59e0b',
+          yAxisID: 'y1', borderWidth: 1.5, borderDash: [6,3], pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2) ?? '–'}` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: noGrid },
+        y: { position: 'left', title: { display: true, text: 'Inventory (Mbbl)' }, grid: gridOpts },
+        y1: { position: 'right', title: { display: true, text: 'Flow (Mbpd)' }, grid: noGrid,
+              min: 2, max: 16 }
+      }
+    }
+  });
+}
+
+// ---- Cushing Chart ----
+function renderCushingChart(data) {
+  destroyChart('cushing');
+  const labels = data.map(d => fmtDate(d.date));
+  charts.cushing = new Chart(document.getElementById('cushingChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Cushing (Mbbl)', data: data.map(d => d.cushing_mbbl),
+        borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)',
+        borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(2)} Mbbl` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+        y: { title: { display: true, text: 'Mbbl' }, grid: gridOpts }
+      }
+    }
+  });
+}
+
+// ---- Utilization Chart (time series) ----
+function renderUtilChart(data) {
+  destroyChart('util');
+  const labels = data.map(d => fmtDate(d.date));
+  charts.util = new Chart(document.getElementById('utilChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Utilization %', data: data.map(d => d.utilization_pct),
+        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
+        borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(1)}%` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+        y: { title: { display: true, text: '%' }, grid: gridOpts, ticks: { callback: v => v + '%' } }
+      }
+    }
+  });
+}
+
+// ---- Products Chart: Gasoline & Distillates ----
+function renderProductsChart(data) {
+  destroyChart('products');
+  const labels = data.map(d => fmtDate(d.date));
+  charts.products = new Chart(document.getElementById('productsChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Gasoline (Mbbl)', data: data.map(d => d.gasoline_mbbl),
+          borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)',
+          yAxisID: 'y', borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
+        },
+        {
+          label: 'Distillates (Mbbl)', data: data.map(d => d.distillate_mbbl),
+          borderColor: '#ef4444', backgroundColor: '#ef4444',
+          yAxisID: 'y1', borderWidth: 2, borderDash: [6,3], pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(1) ?? '–'}` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: noGrid },
+        y: { position: 'left', title: { display: true, text: 'Gasoline (Mbbl)' }, grid: gridOpts },
+        y1: { position: 'right', title: { display: true, text: 'Distillates (Mbbl)' }, grid: noGrid }
+      }
+    }
+  });
+}
+
+// ---- YoY Utilization Chart ----
+async function renderYoyChart() {
+  destroyChart('yoy');
+  const resp = await fetch('/api/data/yoy?series=utilization');
+  const yoy = await resp.json();
+
+  const labels = yoy.map(r => 'Wk ' + r.wk);
+  const years = Object.keys(yoy[0]).filter(k => k.startsWith('y')).sort();
+  const currentYear = years[years.length - 1];
+  const prevYear = years[years.length - 2];
+  const prev2Year = years[years.length - 3];
+
+  const colors = {
+    [currentYear]: { border: '#3b82f6', width: 2.5 },
+    [prevYear]: { border: '#f59e0b', width: 1.5, dash: [6,3] },
+    [prev2Year]: { border: '#71717a', width: 1.5, dash: [2,3] },
+  };
+
+  const datasets = [
+    {
+      label: '5-yr avg', data: yoy.map(r => r.avg5),
+      borderColor: 'rgba(59,130,246,0.2)', backgroundColor: 'rgba(59,130,246,0.06)',
+      borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, order: 4
+    }
+  ];
+
+  for (const yr of [prev2Year, prevYear, currentYear]) {
+    const c = colors[yr];
+    datasets.push({
+      label: yr.replace('y', ''), data: yoy.map(r => r[yr]),
+      borderColor: c.border, backgroundColor: c.border,
+      borderWidth: c.width, borderDash: c.dash || [],
+      pointRadius: 0, pointHoverRadius: 4, tension: 0.3, spanGaps: false,
+      order: yr === currentYear ? 1 : 3
+    });
+  }
+
+  // Legend
+  document.getElementById('yoyLegend').innerHTML = `
+    <span><span class="legend-line" style="background:${colors[currentYear].border}"></span>${currentYear.replace('y','')}</span>
+    <span><span class="legend-dash" style="border-color:${colors[prevYear].border}"></span>${prevYear.replace('y','')}</span>
+    <span><span class="legend-dot" style="border-color:${colors[prev2Year].border}"></span>${prev2Year.replace('y','')}</span>
+    <span><span class="legend-fill" style="background:rgba(59,130,246,0.15)"></span>5-yr avg</span>
+  `;
+
+  // Find "now" index: latest non-null value in current year
+  let nowIdx = 0;
+  for (let i = yoy.length - 1; i >= 0; i--) {
+    if (yoy[i][currentYear] != null) { nowIdx = i; break; }
+  }
+
+  const nowLine = {
+    id: 'nowLine',
+    afterDatasetsDraw(chart) {
+      const {ctx, chartArea: {top, bottom}, scales: {x}} = chart;
+      const xp = x.getPixelForValue(nowIdx);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(xp, top); ctx.lineTo(xp, bottom); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '11px DM Sans';
+      ctx.fillText('now', xp + 4, top + 13);
+      ctx.restore();
+    }
+  };
+
+  charts.yoy = new Chart(document.getElementById('yoyChart'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => c.parsed.y != null ? `${c.dataset.label}: ${c.parsed.y.toFixed(1)}%` : `${c.dataset.label}: –` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 13 }, grid: noGrid },
+        y: { title: { display: true, text: 'Utilization %' }, min: 78, max: 98, grid: gridOpts,
+             ticks: { callback: v => v + '%' } }
+      }
+    },
+    plugins: [nowLine]
+  });
+}
+
+// ---- Regional (PADD) Map ----
+
+// FIPS state codes grouped by PADD (per EIA WPSR definitions).
+const PADD_STATE_FIPS = {
+  1: ['09','10','11','12','13','23','24','25','33','34','36','37','42','44','45','50','51','54'],
+  2: ['17','18','19','20','21','26','27','29','31','38','39','40','46','47','55'],
+  3: ['01','05','22','28','35','48'],
+  4: ['08','16','30','49','56'],
+  5: ['02','04','06','15','32','41','53']
+};
+
+let _usTopo = null;
+async function loadUsTopo() {
+  if (_usTopo) return _usTopo;
+  const resp = await fetch('https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json');
+  _usTopo = await resp.json();
+  return _usTopo;
+}
+
+async function renderRegionalMap() {
+  const [{ as_of, regions }, us] = await Promise.all([
+    fetch('/api/regional').then(r => r.json()),
+    loadUsTopo()
+  ]);
+
+  const fillFor = wow => {
+    if (wow == null) return '#3a3a3e';
+    if (wow >  0.5) return 'rgba(16,185,129,0.55)';
+    if (wow >  0)   return 'rgba(16,185,129,0.30)';
+    if (wow < -0.5) return 'rgba(239,68,68,0.55)';
+    if (wow <  0)   return 'rgba(239,68,68,0.30)';
+    return 'rgba(255,255,255,0.10)';
+  };
+
+  const W = 800, H = 440;
+  const allStates = topojson.feature(us, us.objects.states);
+  const projection = d3.geoAlbersUsa().fitSize([W, H], allStates);
+  const path = d3.geoPath(projection);
+
+  const svg = d3.select('#paddMap');
+  svg.selectAll('*').remove();
+
+  // Draw a merged shape per PADD
+  for (const padd of [1,2,3,4,5]) {
+    const fipsSet = new Set(PADD_STATE_FIPS[padd]);
+    const geoms = us.objects.states.geometries.filter(g => fipsSet.has(g.id));
+    const merged = topojson.merge(us, geoms);
+    const r = regions['padd' + padd];
+
+    svg.append('path')
+      .attr('d', path(merged))
+      .attr('fill', fillFor(r ? r.wow_mbbl : null))
+      .attr('stroke', '#0e0e10')
+      .attr('stroke-width', 1.5);
+
+    // Light state-internal borders for context
+    const mesh = topojson.mesh(us, us.objects.states,
+      (a, b) => a !== b && fipsSet.has(a.id) && fipsSet.has(b.id));
+    svg.append('path')
+      .attr('d', path(mesh))
+      .attr('fill', 'none')
+      .attr('stroke', 'rgba(255,255,255,0.06)')
+      .attr('stroke-width', 0.5);
+
+    // Label at PADD centroid
+    const [cx, cy] = path.centroid(merged);
+    if (Number.isFinite(cx) && Number.isFinite(cy)) {
+      svg.append('text')
+        .attr('x', cx).attr('y', cy)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#e4e4e7').attr('font-size', 13).attr('font-weight', 500)
+        .text('PADD ' + padd);
+      if (r && r.current_mbbl != null) {
+        svg.append('text')
+          .attr('x', cx).attr('y', cy + 16)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#a1a1aa').attr('font-size', 11)
+          .attr('font-family', "'JetBrains Mono', monospace")
+          .text(r.current_mbbl.toFixed(0) + ' Mbbl');
+      }
+    }
+  }
+
+  // Cushing pin (geographic coords: 36.0145°N, 96.7669°W)
+  const cushingProj = projection([-96.7669, 36.0145]);
+  const cu = regions.cushing;
+  if (cushingProj) {
+    const [cx, cy] = cushingProj;
+    svg.append('circle')
+      .attr('cx', cx).attr('cy', cy).attr('r', 5)
+      .attr('fill', '#a78bfa').attr('stroke', '#0e0e10').attr('stroke-width', 1.5);
+    svg.append('text')
+      .attr('x', cx + 9).attr('y', cy + 4)
+      .attr('fill', '#a78bfa').attr('font-size', 11)
+      .attr('font-family', "'JetBrains Mono', monospace")
+      .text('Cushing ' + (cu && cu.current_mbbl != null ? cu.current_mbbl.toFixed(1) + ' Mbbl' : '–'));
+  }
+
+  // Cards: west-to-east + Cushing
+  const order = ['padd5','padd4','padd2','padd3','padd1','cushing'];
+  const cards = order.map(k => {
+    const r = regions[k];
+    if (!r) return '';
+    const cur = r.current_mbbl == null ? '–' : r.current_mbbl.toFixed(1) + ' Mbbl';
+    const wow = r.wow_mbbl, yoy = r.yoy_mbbl;
+    const wowText = wow == null ? '–' : `${wow >= 0 ? '+' : ''}${wow.toFixed(2)} wk`;
+    const yoyText = yoy == null ? '–' : `${yoy >= 0 ? '+' : ''}${yoy.toFixed(0)} yr`;
+    const wowCls = wow == null ? '' : (wow > 0 ? 'up' : 'down');
+    const yoyCls = yoy == null ? '' : (yoy > 0 ? 'up' : 'down');
+    return `
+      <div class="stat-card">
+        <div class="stat-label">${r.label}</div>
+        <div class="stat-value">${cur}</div>
+        <div class="stat-delta ${wowCls}">${wowText}</div>
+        <div class="stat-delta ${yoyCls}">${yoyText}</div>
+      </div>`;
+  });
+  document.getElementById('regionalCards').innerHTML = cards.join('');
+
+  if (as_of) {
+    document.getElementById('regionalSub').textContent =
+      `US crude stocks by PADD region · week ending ${as_of} (excl SPR) · fill = WoW change`;
+  }
+}
+
+// ---- Tanker Positions Map ----
+let _worldTopo = null;
+async function loadWorldTopo() {
+  if (_worldTopo) return _worldTopo;
+  const r = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json');
+  _worldTopo = await r.json();
+  return _worldTopo;
+}
+
+async function renderShipMap() {
+  const [aisData, sarData, world] = await Promise.all([
+    fetch('/api/ships').then(r => r.json()),
+    fetch('/api/sar_detections').then(r => r.json()).catch(() => ({detections: [], total: 0, aois: []})),
+    loadWorldTopo()
+  ]);
+
+  const W = 960, H = 480;
+  const land = topojson.feature(world, world.objects.countries);
+  const projection = d3.geoEqualEarth().fitSize([W, H], land);
+  const path = d3.geoPath(projection);
+
+  const svg = d3.select('#shipMap');
+  svg.selectAll('*').remove();
+
+  // Land
+  svg.append('path')
+    .attr('d', path(land))
+    .attr('fill', '#18181b')
+    .attr('stroke', '#2a2a2e')
+    .attr('stroke-width', 0.5);
+
+  // Country borders
+  svg.append('path')
+    .attr('d', path(topojson.mesh(world, world.objects.countries, (a,b) => a !== b)))
+    .attr('fill', 'none')
+    .attr('stroke', '#2a2a2e')
+    .attr('stroke-width', 0.4);
+
+  // ---- AIS layer ----
+  const colorFor = ship => {
+    const t = ship.ship_type;
+    if (t === 80) return '#3b82f6';
+    if (t === 89) return '#a78bfa';
+    return '#71717a';  // 81-88 hazmat or unknown
+  };
+
+  const ships = aisData.ships || [];
+  const aisG = svg.append('g').attr('class', 'ais-layer');
+  for (const s of ships) {
+    const proj = projection([s.longitude, s.latitude]);
+    if (!proj) continue;
+    const underway = (s.sog || 0) > 0.5;
+    aisG.append('circle')
+      .attr('cx', proj[0]).attr('cy', proj[1])
+      .attr('r', underway ? 2.0 : 1.3)
+      .attr('fill', colorFor(s))
+      .attr('opacity', underway ? 0.8 : 0.45)
+      .append('title').text(
+        `[AIS] ${s.name || s.mmsi} (type ${s.ship_type})\n` +
+        `${(s.sog ?? 0).toFixed(1)} kn · dest: ${s.destination || '–'}`
+      );
+  }
+
+  // ---- SAR layer ----
+  const sarDets = sarData.detections || [];
+  const sarG = svg.append('g').attr('class', 'sar-layer');
+  for (const d of sarDets) {
+    const proj = projection([d.lon, d.lat]);
+    if (!proj) continue;
+    sarG.append('circle')
+      .attr('cx', proj[0]).attr('cy', proj[1])
+      .attr('r', 1.6)
+      .attr('fill', '#f59e0b')
+      .attr('opacity', 0.75)
+      .append('title').text(
+        `[SAR] ${d.aoi}\n` +
+        `${d.lat.toFixed(3)}, ${d.lon.toFixed(3)}\n` +
+        `last seen ${(d.last_seen || '').slice(0,19)} · ${d.n_scenes} scene(s)`
+      );
+  }
+
+  // ---- Stats cards ----
+  const total = ships.length;
+  const crude = ships.filter(s => s.ship_type === 80).length;
+  const underway = ships.filter(s => (s.sog || 0) > 0.5).length;
+  const sarCount = sarDets.length;
+  const cards = [
+    { label: 'AIS tankers', value: total },
+    { label: 'AIS crude (type 80)', value: crude },
+    { label: 'AIS underway', value: underway },
+    { label: 'SAR vessels (transient)', value: sarCount },
+  ];
+  document.getElementById('shipsStats').innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value">${(c.value || 0).toLocaleString()}</div>
+    </div>
+  `).join('');
+
+  // Subtitle
+  const aisSnap = aisData.snapshot_at ? String(aisData.snapshot_at).split(' ').slice(0,2).join(' ') : null;
+  const sarSnap = sarData.last_seen ? String(sarData.last_seen).slice(0,19) : null;
+  const aoisSummary = (sarData.aois || []).map(a => `${a.name} (${a.transient_water_count})`).join(', ');
+  document.getElementById('shipsSub').textContent =
+    `AIS tanker positions${aisSnap ? ' through ' + aisSnap : ''} · ` +
+    `SAR vessels${sarSnap ? ' through ' + sarSnap : ''}` +
+    (aoisSummary ? ` · AOIs: ${aoisSummary}` : '') +
+    ` · positions only, no load state / voyage intent / identity verification (TDD §9.7)`;
+}
+
+// ---- Global Inventory Charts ----
+
+function renderGlobalStats(data) {
+  if (!data.length) return;
+  const last = data[data.length - 1];
+  const prev = data.length > 1 ? data[data.length - 2] : null;
+  // Find pre-crisis (Feb 2026) value
+  const preCrisis = data.find(d => d.date === '2026-02') || data.find(d => d.date === '2026-01');
+
+  const cards = [
+    { label: 'OECD total', value: fmt(last.oecd_stocks, 0) + ' Mbbl', delta: delta(last.oecd_stocks, prev?.oecd_stocks) },
+    { label: 'US total', value: fmt(last.us_stocks, 0) + ' Mbbl', delta: delta(last.us_stocks, prev?.us_stocks) },
+    { label: 'Other OECD', value: fmt(last.other_oecd_stocks, 0) + ' Mbbl',
+      delta: preCrisis ? { text: (last.other_oecd_stocks - preCrisis.other_oecd_stocks).toFixed(0) + ' from Feb', cls: last.other_oecd_stocks < preCrisis.other_oecd_stocks ? 'down' : 'up' } : {text:'–',cls:''} },
+    { label: 'World inv Δ', value: fmt(last.world_inv_change, 1) + ' Mbpd', delta: { text: last.world_inv_change > 0 ? 'build' : 'draw', cls: last.world_inv_change > 0 ? 'up' : 'down' } },
+    { label: 'Supply−demand', value: fmt((last.world_production||0)-(last.world_consumption||0), 1) + ' Mbpd',
+      delta: { text: 'prod ' + fmt(last.world_production,1) + ' · cons ' + fmt(last.world_consumption,1), cls: '' } },
+  ];
+  document.getElementById('globalStats').innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-delta ${c.delta.cls}">${c.delta.text}</div>
+    </div>
+  `).join('');
+}
+
+function renderOecdChart(data) {
+  destroyChart('oecd');
+  const labels = data.map(d => d.date);
+  charts.oecd = new Chart(document.getElementById('oecdChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'US total stocks (Mbbl)', data: data.map(d => d.us_stocks),
+          borderColor: '#3b82f6', backgroundColor: '#3b82f6',
+          yAxisID: 'y', borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.2
+        },
+        {
+          label: 'Other OECD stocks (Mbbl)', data: data.map(d => d.other_oecd_stocks),
+          borderColor: '#ef4444', backgroundColor: '#ef4444',
+          yAxisID: 'y1', borderWidth: 2, borderDash: [6,3], pointRadius: 2, pointHoverRadius: 5, tension: 0.2
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(0) ?? '–'}` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: noGrid },
+        y: { position: 'left', title: { display: true, text: 'US (Mbbl)' }, grid: gridOpts },
+        y1: { position: 'right', title: { display: true, text: 'Other OECD (Mbbl)' }, grid: noGrid }
+      }
+    }
+  });
+}
+
+function renderSupplyDemandChart(data) {
+  destroyChart('supplyDemand');
+  const labels = data.map(d => d.date);
+  charts.supplyDemand = new Chart(document.getElementById('supplyDemandChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Production (Mbpd)', data: data.map(d => d.world_production),
+          borderColor: '#10b981', backgroundColor: '#10b981',
+          borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.2
+        },
+        {
+          label: 'Consumption (Mbpd)', data: data.map(d => d.world_consumption),
+          borderColor: '#f59e0b', backgroundColor: '#f59e0b',
+          borderWidth: 2, borderDash: [6,3], pointRadius: 2, pointHoverRadius: 5, tension: 0.2
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(1) ?? '–'}` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+        y: { title: { display: true, text: 'Mbpd' }, grid: gridOpts }
+      }
+    }
+  });
+}
+
+function renderInvChangeChart(data) {
+  destroyChart('invChange');
+  const labels = data.map(d => d.date);
+  const vals = data.map(d => d.world_inv_change);
+  const colors = vals.map(v => v != null && v >= 0 ? 'rgba(16,185,129,0.6)' : 'rgba(239,68,68,0.6)');
+  const borders = vals.map(v => v != null && v >= 0 ? '#10b981' : '#ef4444');
+
+  charts.invChange = new Chart(document.getElementById('invChangeChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Inventory change (Mbpd)', data: vals,
+        backgroundColor: colors, borderColor: borders, borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(1) ?? '–'} Mbpd` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+        y: { title: { display: true, text: 'Mbpd' }, grid: gridOpts }
+      }
+    }
+  });
+}
+
+// ---- Setup banner / ingest controls ----
+
+async function fetchStatus() {
+  const r = await fetch('/api/status');
+  return r.json();
+}
+
+function fmtRel(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  const sec = (Date.now() - d.getTime()) / 1000;
+  if (sec < 60) return `${Math.floor(sec)}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+// Build setup-banner rows. Returns array of {pipeline, label, status, statusClass, btn}.
+// A row is omitted when the pipeline is healthy & idle.
+function setupRows(st) {
+  const rows = [];
+
+  // EIA: show row if empty or stale (>24h) or currently running
+  const eia = st.eia || {};
+  const eiaIngest = eia.ingest || {status: 'idle'};
+  const eiaStale = eia.last_refresh ? (Date.now() - new Date(eia.last_refresh).getTime()) > 24 * 3600 * 1000 : true;
+  if (eia.total_rows === 0 || eiaIngest.status === 'running' || eiaIngest.error) {
+    rows.push({
+      pipeline: 'eia',
+      label: 'EIA inventories',
+      status: eiaIngest.status === 'running'
+        ? `running… (started ${fmtRel(eiaIngest.started_at)})`
+        : eiaIngest.error
+          ? `error: ${eiaIngest.error}`
+          : 'no data yet',
+      statusClass: eiaIngest.status === 'running' ? 'running' : (eiaIngest.error ? 'error' : 'empty'),
+      btnLabel: 'Pull EIA data',
+      btnDisabled: eiaIngest.status === 'running',
+    });
+  } else if (eiaStale) {
+    rows.push({
+      pipeline: 'eia',
+      label: 'EIA inventories',
+      status: `last refresh ${fmtRel(eia.last_refresh)} (stale)`,
+      statusClass: 'empty',
+      btnLabel: 'Refresh',
+      btnDisabled: false,
+    });
+  }
+
+  // AIS: only show if enabled, and only if state needs attention
+  const ais = st.ais || {};
+  if (ais.enabled) {
+    const censusIngest = ais.ingest_census || {status: 'idle'};
+    const phase1Ingest = ais.ingest_phase1 || {status: 'idle'};
+
+    if (!ais.manifest_at || censusIngest.status === 'running' || censusIngest.error) {
+      rows.push({
+        pipeline: 'ais-census',
+        label: 'AIS tanker manifest',
+        status: censusIngest.status === 'running'
+          ? `running… (started ${fmtRel(censusIngest.started_at)} — 24h capture)`
+          : censusIngest.error
+            ? `error: ${censusIngest.error}`
+            : 'no manifest yet',
+        statusClass: censusIngest.status === 'running' ? 'running' : (censusIngest.error ? 'error' : 'empty'),
+        btnLabel: 'Run AIS census (24h)',
+        btnDisabled: censusIngest.status === 'running',
+        btnWarn: true,
+      });
+    } else if (!ais.snapshot_at || phase1Ingest.status === 'running' || phase1Ingest.error) {
+      rows.push({
+        pipeline: 'ais',
+        label: 'AIS tanker positions',
+        status: phase1Ingest.status === 'running'
+          ? `running… (started ${fmtRel(phase1Ingest.started_at)} — 30 min capture)`
+          : phase1Ingest.error
+            ? `error: ${phase1Ingest.error}`
+            : 'no snapshot yet',
+        statusClass: phase1Ingest.status === 'running' ? 'running' : (phase1Ingest.error ? 'error' : 'empty'),
+        btnLabel: 'Pull positions',
+        btnDisabled: phase1Ingest.status === 'running',
+      });
+    }
+  }
+
+  // SAR: only show if enabled
+  const sar = st.sar || {};
+  if (sar.enabled) {
+    const sarIngest = sar.ingest || {status: 'idle'};
+    const empty = !sar.aois || sar.aois.length === 0;
+    if (empty || sarIngest.status === 'running' || sarIngest.error) {
+      rows.push({
+        pipeline: 'sar',
+        label: 'SAR detections',
+        status: sarIngest.status === 'running'
+          ? `running… (started ${fmtRel(sarIngest.started_at)} — Sentinel Hub PUs charged)`
+          : sarIngest.error
+            ? `error: ${sarIngest.error}`
+            : 'no detections yet',
+        statusClass: sarIngest.status === 'running' ? 'running' : (sarIngest.error ? 'error' : 'empty'),
+        btnLabel: 'Run SAR ingest',
+        btnDisabled: sarIngest.status === 'running',
+        btnWarn: true,
+      });
+    }
+  }
+
+  return rows;
+}
+
+function renderSetupBanner(st) {
+  const banner = document.getElementById('setupBanner');
+  const container = document.getElementById('setupRows');
+  const rows = setupRows(st);
+
+  if (rows.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  banner.style.display = '';
+  container.innerHTML = rows.map(r => `
+    <div class="setup-row" data-pipeline="${r.pipeline}">
+      <div class="setup-row-label">${r.label}</div>
+      <div class="setup-row-status ${r.statusClass}">${r.status}</div>
+      <button class="setup-btn ${r.btnWarn ? 'warn' : ''}"
+              onclick="triggerIngest('${r.pipeline}', this)"
+              ${r.btnDisabled ? 'disabled' : ''}>${r.btnLabel}</button>
+    </div>
+  `).join('');
+}
+
+async function triggerIngest(pipeline, btnEl) {
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = 'starting…';
+  }
+  try {
+    const r = await fetch(`/api/ingest/${pipeline}`, {method: 'POST'});
+    const body = await r.json();
+    if (!r.ok) {
+      alert(`Failed to start ${pipeline}: ${body.reason || body.status || r.status}`);
+      const st = await fetchStatus();
+      renderSetupBanner(st);
+      return;
+    }
+  } catch (e) {
+    alert(`Failed to start ${pipeline}: ${e}`);
+    const st = await fetchStatus();
+    renderSetupBanner(st);
+    return;
+  }
+  startStatusPolling();
+}
+
+let _pollTimer = null;
+function startStatusPolling() {
+  if (_pollTimer) return;
+  const tick = async () => {
+    const st = await fetchStatus();
+    renderSetupBanner(st);
+    const anyRunning = ['eia', 'ais', 'ais-census', 'sar'].some(p => {
+      const ig = (p === 'ais') ? (st.ais && st.ais.ingest_phase1)
+              : (p === 'ais-census') ? (st.ais && st.ais.ingest_census)
+              : (p === 'sar') ? (st.sar && st.sar.ingest)
+              : (st.eia && st.eia.ingest);
+      return ig && ig.status === 'running';
+    });
+    if (!anyRunning) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+      // Refresh charts after ingest completes
+      loadData();
+    }
+  };
+  _pollTimer = setInterval(tick, 5000);
+  tick();  // run once immediately
+}
+
+
+// ---- Data Loading ----
+async function loadData() {
+  // Always refresh setup banner so the user can act when data is missing.
+  const st = await fetchStatus();
+  renderSetupBanner(st);
+
+  // If something's already running (e.g. user hit reload mid-ingest), keep polling.
+  const ingests = [
+    st.eia && st.eia.ingest,
+    st.ais && st.ais.ingest_phase1,
+    st.ais && st.ais.ingest_census,
+    st.sar && st.sar.ingest,
+  ];
+  if (ingests.some(i => i && i.status === 'running')) startStatusPolling();
+
+  const months = document.getElementById('monthsSelect').value;
+  const resp = await fetch(`/api/data?months=${months}`);
+  rawData = await resp.json();
+
+  if (rawData.length === 0) {
+    document.getElementById('status').textContent = 'no EIA data — pull it from Setup above';
+    return;
+  }
+
+  renderStats(rawData);
+  renderMainChart(rawData);
+  renderCushingChart(rawData);
+  renderUtilChart(rawData);
+  renderProductsChart(rawData);
+  await renderYoyChart();
+  await renderRegionalMap();
+
+  const globalResp = await fetch('/api/global?months=24');
+  const globalData = await globalResp.json();
+  if (globalData.length > 0) {
+    renderGlobalStats(globalData);
+    renderOecdChart(globalData);
+    renderSupplyDemandChart(globalData);
+    renderInvChangeChart(globalData);
+  }
+
+  await renderShipMap();
+
+  const last = rawData[rawData.length - 1];
+  document.getElementById('footNote').textContent =
+    `Weekly data: week ending ${last.date} · STEO: updated monthly · Source: EIA WPSR + STEO`;
+
+  const refreshTime = (st.eia && st.eia.last_refresh) ? new Date(st.eia.last_refresh).toLocaleString() : 'never';
+  document.getElementById('status').textContent = `updated ${refreshTime}`;
+}
+
+async function refreshData() {
+  // Header refresh button is shorthand for "pull EIA again".
+  triggerIngest('eia');
+}
+
+// ---- Init ----
+loadData();
+</script>
+</body>
+</html>
