@@ -8,6 +8,9 @@ Self-hosted oil markets dashboard:
 - **IEA Oil Market Report** — Tables 1/1a/1b from the monthly free abridged OMR PDF
 - **Tanker positions** — AIS (aisstream.io) + Sentinel-1 SAR (Copernicus / CDSE)
 
+<img width="1768" height="4657" alt="image" src="https://github.com/user-attachments/assets/5b66cf2e-ca46-44d9-a20f-c634212fc1dd" />
+
+
 All data is fetched from public sources you authenticate to with your own
 free-tier keys; nothing is shipped pre-baked. The dashboard renders empty-state
 cards on first run and walks you through bootstrapping each pipeline.
