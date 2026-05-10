@@ -19,3 +19,7 @@ websockets>=12.0
 
 # Scheduler (replaces systemd timers in the container deployment).
 apscheduler>=3.10
+
+# S3-compatible storage backend (MinIO, AWS S3). Optional at runtime —
+# dashboard falls back to local filesystem when S3_BUCKET is unset.
+s3fs>=2024.1

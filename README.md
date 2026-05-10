@@ -169,9 +169,17 @@ oil-inventory-dashboard/
 
 ## Data layout
 
-All on-disk data lives under `DATA_DIR` (default `./data/`). Subdirectories:
+The dashboard supports two storage backends:
 
-- `eia-dashboard/eia_data.db` — sqlite for EIA weekly + STEO monthly series
+- **Local filesystem** (default): everything under `DATA_DIR` (default `./data/`).
+- **S3-compatible** (MinIO, AWS S3, etc.): non-sqlite reads pull from
+  `s3://<S3_BUCKET>/...` when `S3_BUCKET` + `AWS_ACCESS_KEY_ID` +
+  `AWS_SECRET_ACCESS_KEY` are all set. The sqlite EIA database always lives on
+  local disk (sqlite isn't S3-friendly).
+
+Subdirectories / object key prefixes used:
+
+- `eia-dashboard/eia_data.db` — sqlite, **local only**
 - `aisstream/census/summary_*.json` + `raw_*.parquet` — Phase 0 census output
 - `aisstream/snapshots/tanker_positions_latest.parquet` — live AIS snapshot,
   rewritten every 4 h by Phase 1
@@ -179,12 +187,30 @@ All on-disk data lives under `DATA_DIR` (default `./data/`). Subdirectories:
 - `sentinel_sar/<aoi>/{aggregated_detections.parquet,clusters.parquet}` —
   CFAR + KDTree-clustered output
 
+### Hybrid setup: server reads S3, laptop pipelines write local
+
+A common setup splits read and write hosts:
+
+- **Server** runs the dashboard with `S3_BUCKET` set → reads everything from MinIO.
+- **Laptop** runs the pipelines (AIS Phase 1, SAR ingest) with `S3_BUCKET`
+  unset → writes parquet/tif to local `DATA_DIR`.
+- A periodic `mc mirror` (cron, systemd timer, or manual) lifts laptop writes
+  into the bucket so the server sees fresh data.
+
+Pipeline-side S3 writes (so the laptop writes directly to s3:// without the
+mirror step) are tracked as a follow-up — see `pipelines/_env.py` for the
+`data_uri()` / `storage_fs()` helpers that future PR will plumb through the
+pipelines themselves.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `EIA_API_KEY` | (unset → XLS fallback) | EIA v2 API key |
 | `AISSTREAM_API_KEY` | (unset → AIS disabled) | aisstream.io WebSocket key |
+| `S3_BUCKET` | (unset → local mode) | When set, dashboard reads parquet + SAR rasters from `s3://<bucket>/...` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | (unset → local mode) | S3 credentials. Required alongside `S3_BUCKET` |
+| `AWS_ENDPOINT_URL` | (unset → AWS S3) | MinIO / custom S3 endpoint (e.g. `https://s3.example.com`) |
 | `CDSE_CLIENT_ID`, `CDSE_CLIENT_SECRET` | (unset → SAR disabled) | Copernicus Data Space OAuth |
 | `SAR_ENABLED` | `true` if CDSE set, else `false` | Override SAR gate |
 | `DATA_DIR` | `<repo>/data` | Root for sqlite + parquet + SAR rasters |
