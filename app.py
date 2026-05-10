@@ -42,34 +42,38 @@ import uvicorn
 # Pipeline modules live alongside the dashboard in this repo. They host the
 # env loader plus the data ingestion / detection scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "pipelines"))
-from _env import aisstream_enabled, load_repo_env, sar_enabled  # noqa: E402
+from _env import (  # noqa: E402
+    aisstream_enabled,
+    data_uri,
+    db_path,
+    load_repo_env,
+    s3_enabled,
+    sar_enabled,
+    storage_fs,
+    storage_root,
+)
 load_repo_env()
 import steo  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+#
+# All non-sqlite reads/writes go through data_uri() / storage_fs() so the same
+# code works against local DATA_DIR or s3://<S3_BUCKET>/. The sqlite EIA DB
+# always lives on local disk (db_path()) since sqlite isn't S3-friendly.
 
-# DATA_DIR defaults to ./data/ in the repo so a fresh checkout works without
-# editing anything. Container deployment overrides to /data via Dockerfile;
-# personal setups can point this anywhere via .env.
 REPO_ROOT = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", str(REPO_ROOT / "data")))
-
-# Sqlite DB lives on the persistent volume (one canonical path across local
-# and container). Override with EIA_DB_PATH if you need to point at a different
-# file (e.g. a frozen snapshot or a legacy in-tree location).
-DB_PATH = Path(os.environ.get("EIA_DB_PATH", str(DATA_DIR / "eia-dashboard" / "eia_data.db")))
 TEMPLATES_DIR = REPO_ROOT / "templates"
+DB_PATH = db_path()
 
 
-def resolve_tanker_snapshot() -> Path:
-    """Live AIS snapshot path. Resolved at request time so DATA_DIR overrides
-    take effect and cron-driven updates land live."""
-    return DATA_DIR / "aisstream" / "snapshots" / "tanker_positions_latest.parquet"
+def resolve_tanker_snapshot() -> str:
+    """Live AIS snapshot URI. Resolved at request time so storage-mode changes
+    and cron-driven updates land live."""
+    return data_uri("aisstream", "snapshots", "tanker_positions_latest.parquet")
 
 
-SAR_DATA_DIR = DATA_DIR / "sentinel_sar"
 EIA_API_KEY = os.environ.get("EIA_API_KEY", "")
 
 # EIA XLS download URLs (no API key needed)
@@ -556,12 +560,13 @@ async def get_ships():
     Positions only — no load state, voyage intent, or identity verification.
     See WTI_Tanker_Forecast_TDD.md §9.7.
     """
-    snapshot_path = resolve_tanker_snapshot()
-    if not snapshot_path.exists():
+    snapshot_uri = resolve_tanker_snapshot()
+    fs = storage_fs()
+    if not fs.exists(snapshot_uri):
         return JSONResponse({"snapshot_at": None, "total": 0, "ships": [],
                               "error": "no AIS snapshot found — run aisstream_phase1.py"})
 
-    df = pd.read_parquet(snapshot_path)
+    df = pd.read_parquet(snapshot_uri)
     snap_at = df["time_utc"].max() if not df.empty else None
 
     cols = ["mmsi", "name", "ship_type", "latitude", "longitude", "sog", "destination"]
@@ -581,23 +586,26 @@ async def get_sar_detections():
     """Return transient over-water SAR vessel detections, aggregated across all AOIs.
 
     Reads `clusters.parquet` produced by `sar_aggregate.py` from each AOI under
-    SAR_DATA_DIR and filters to clusters that are NOT persistent (so we drop
+    sentinel_sar/ and filters to clusters that are NOT persistent (so we drop
     fixed infrastructure / long-anchored objects) and NOT on land. The result
     is the candidate vessel set the dashboard's tanker map should overlay.
     """
-    if not SAR_DATA_DIR.exists():
+    sar_root = data_uri("sentinel_sar")
+    fs = storage_fs()
+    if not fs.exists(sar_root):
         return JSONResponse({"aois": [], "total": 0, "detections": [],
-                              "error": "SAR_DATA_DIR missing"})
+                              "error": "sentinel_sar/ missing"})
 
     rows: list[dict] = []
     aoi_summaries: list[dict] = []
     last_seen_global: str | None = None
 
-    for aoi_dir in sorted(p for p in SAR_DATA_DIR.iterdir() if p.is_dir()):
-        clusters_path = aoi_dir / "clusters.parquet"
-        if not clusters_path.exists():
+    for aoi_uri in sorted(_list_aoi_dirs(fs, sar_root)):
+        aoi_name = aoi_uri.rstrip("/").rsplit("/", 1)[-1]
+        clusters_uri = data_uri("sentinel_sar", aoi_name, "clusters.parquet")
+        if not fs.exists(clusters_uri):
             continue
-        df = pd.read_parquet(clusters_path)
+        df = pd.read_parquet(clusters_uri)
         if df.empty:
             continue
         for c in ("lat", "lon", "sigma0_max_db", "n_scenes", "n_detections"):
@@ -614,7 +622,7 @@ async def get_sar_detections():
             if ls and (last_seen_global is None or ls > last_seen_global):
                 last_seen_global = ls
             rows.append({
-                "aoi": aoi_dir.name,
+                "aoi": aoi_name,
                 "lat": float(r["lat"]),
                 "lon": float(r["lon"]),
                 "last_seen": ls,
@@ -623,7 +631,7 @@ async def get_sar_detections():
             })
 
         aoi_summaries.append({
-            "name": aoi_dir.name,
+            "name": aoi_name,
             "transient_water_count": int(len(kept)),
             "persistent_water_count": int(((df["is_persistent"]) & (~df["any_on_land"])).sum()),
         })
@@ -660,7 +668,8 @@ async def status():
     conn.close()
 
     return {
-        "data_dir": str(DATA_DIR),
+        "storage_root": storage_root(),
+        "storage_mode": "s3" if s3_enabled() else "local",
         "db_path": str(DB_PATH),
         "eia": {
             "total_rows": eia_total,
@@ -718,36 +727,67 @@ async def _run_tracked(pipeline: str, awaitable) -> None:
                    finished_at=_now_iso(), error=str(e)[:500])
 
 
-def _ais_snapshot_info() -> dict:
-    p = resolve_tanker_snapshot()
-    if not p.exists():
-        return {"snapshot_at": None, "n_ships": 0, "snapshot_path": str(p)}
+def _list_aoi_dirs(fs, sar_root: str) -> list[str]:
+    """List immediate subdirs of sentinel_sar/. Works for both local and s3."""
     try:
-        df = pd.read_parquet(p)
+        entries = fs.ls(sar_root, detail=True)
+    except FileNotFoundError:
+        return []
+    return [e["name"] for e in entries if e.get("type") == "directory"]
+
+
+def _fs_mtime_iso(fs, uri: str) -> str | None:
+    try:
+        info = fs.info(uri)
+    except (FileNotFoundError, OSError):
+        return None
+    # Local fsspec returns 'mtime' as float epoch; s3fs returns 'LastModified' as datetime.
+    mtime = info.get("mtime")
+    if mtime is not None:
+        return datetime.fromtimestamp(float(mtime), tz=timezone.utc).isoformat()
+    last_modified = info.get("LastModified") or info.get("last_modified")
+    if last_modified is not None:
+        if isinstance(last_modified, datetime):
+            return last_modified.astimezone(timezone.utc).isoformat()
+        return str(last_modified)
+    return None
+
+
+def _ais_snapshot_info() -> dict:
+    uri = resolve_tanker_snapshot()
+    fs = storage_fs()
+    if not fs.exists(uri):
+        return {"snapshot_at": None, "n_ships": 0, "snapshot_path": uri}
+    try:
+        df = pd.read_parquet(uri)
         return {
             "snapshot_at": str(df["time_utc"].max()) if not df.empty else None,
             "n_ships": int(len(df)),
-            "snapshot_path": str(p),
+            "snapshot_path": uri,
         }
     except Exception as e:
         return {"snapshot_at": None, "n_ships": 0, "error": str(e)[:200]}
 
 
 def _ais_manifest_info() -> dict:
-    census_dir = DATA_DIR / "aisstream" / "census"
-    if not census_dir.exists():
+    census_root = data_uri("aisstream", "census")
+    fs = storage_fs()
+    if not fs.exists(census_root):
         return {"manifest_at": None, "manifest_mmsis": 0}
-    manifests = sorted(census_dir.glob("summary_*.json"))
+    try:
+        manifests = sorted(fs.glob(f"{census_root}/summary_*.json"))
+    except (FileNotFoundError, OSError):
+        return {"manifest_at": None, "manifest_mmsis": 0}
     if not manifests:
         return {"manifest_at": None, "manifest_mmsis": 0}
     latest = manifests[-1]
     info = {
-        "manifest_at": datetime.fromtimestamp(latest.stat().st_mtime, tz=timezone.utc).isoformat(),
+        "manifest_at": _fs_mtime_iso(fs, latest),
         "manifest_mmsis": 0,
-        "manifest_path": str(latest),
+        "manifest_path": latest,
     }
     try:
-        with open(latest) as f:
+        with fs.open(latest) as f:
             m = json.load(f)
         info["manifest_mmsis"] = len(m.get("tanker_manifest", []) or [])
     except Exception:
@@ -767,10 +807,13 @@ def _ais_status() -> dict:
 
 def _sar_status() -> dict:
     aois: list[dict] = []
-    if SAR_DATA_DIR.exists():
-        for aoi_dir in sorted(p for p in SAR_DATA_DIR.iterdir() if p.is_dir()):
-            clusters = aoi_dir / "clusters.parquet"
-            if not clusters.exists():
+    sar_root = data_uri("sentinel_sar")
+    fs = storage_fs()
+    if fs.exists(sar_root):
+        for aoi_uri in sorted(_list_aoi_dirs(fs, sar_root)):
+            aoi_name = aoi_uri.rstrip("/").rsplit("/", 1)[-1]
+            clusters = data_uri("sentinel_sar", aoi_name, "clusters.parquet")
+            if not fs.exists(clusters):
                 continue
             try:
                 df = pd.read_parquet(clusters)
@@ -782,8 +825,8 @@ def _sar_status() -> dict:
                 df = pd.DataFrame()
                 n_transient = 0
             aois.append({
-                "name": aoi_dir.name,
-                "clusters_at": datetime.fromtimestamp(clusters.stat().st_mtime, tz=timezone.utc).isoformat(),
+                "name": aoi_name,
+                "clusters_at": _fs_mtime_iso(fs, clusters),
                 "n_clusters": int(len(df)),
                 "n_transient": n_transient,
             })
@@ -833,12 +876,14 @@ async def ingest_ais_census(duration_seconds: int = Query(default=86400, ge=60, 
     if _ingest_busy("ais-census"):
         return JSONResponse({"status": "already_running", "state": INGEST_STATE["ais-census"]}, status_code=409)
 
-    output_dir = DATA_DIR / "aisstream" / "census"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_uri = data_uri("aisstream", "census")
+    fs = storage_fs()
+    if not s3_enabled():
+        Path(output_uri).mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
         str(Path(__file__).parent / "pipelines" / "aisstream_census.py"),
-        "--output", str(output_dir),
+        "--output", output_uri,
         "--duration-seconds", str(duration_seconds),
     ]
 

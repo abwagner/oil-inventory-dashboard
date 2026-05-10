@@ -49,3 +49,83 @@ def sar_enabled() -> bool:
 def aisstream_enabled() -> bool:
     """AIS ingest requires aisstream.io WebSocket key."""
     return bool(os.environ.get("AISSTREAM_API_KEY"))
+
+
+# ---------------------------------------------------------------------------
+# Storage backend
+# ---------------------------------------------------------------------------
+#
+# The dashboard supports two storage modes for parquet / SAR raster files:
+#
+#   1. Local filesystem (default) — DATA_DIR points to a directory on disk.
+#      Used for laptop dev and the simplest single-machine deploy.
+#
+#   2. S3-compatible (MinIO, AWS, etc.) — S3_BUCKET names the bucket; pandas /
+#      pyarrow / rasterio see s3:// URLs and read directly via fsspec/s3fs.
+#      Set when both S3_BUCKET and AWS_ACCESS_KEY_ID are present.
+#      AWS_ENDPOINT_URL points at MinIO when self-hosting.
+#
+# In either mode the sqlite EIA database stays on local disk (sqlite is not a
+# good fit for object storage). EIA_DB_PATH always resolves to a local path.
+# ---------------------------------------------------------------------------
+
+
+def s3_enabled() -> bool:
+    """True when S3-compatible storage is configured. Reads/writes for parquet
+    + SAR rasters route through fsspec; sqlite stays local regardless."""
+    return bool(
+        os.environ.get("S3_BUCKET")
+        and os.environ.get("AWS_ACCESS_KEY_ID")
+        and os.environ.get("AWS_SECRET_ACCESS_KEY")
+    )
+
+
+def storage_root() -> str:
+    """Root URI for non-sqlite storage. 's3://<bucket>' when s3_enabled() else
+    DATA_DIR (local path string)."""
+    if s3_enabled():
+        return f"s3://{os.environ['S3_BUCKET']}"
+    return str(Path(os.environ.get("DATA_DIR", str(REPO_ROOT / "data"))))
+
+
+def data_uri(*parts: str) -> str:
+    """Build a URI under storage_root() from path components.
+
+    Both forms returned here are accepted by pandas, pyarrow, and rasterio
+    (when fsspec / s3fs / boto3 are installed)."""
+    root = storage_root()
+    if not parts:
+        return root
+    if root.startswith("s3://"):
+        suffix = "/".join(p.strip("/\\") for p in parts)
+        return f"{root}/{suffix}"
+    return str(Path(root, *parts))
+
+
+def storage_fs():
+    """Return the fsspec filesystem matching storage_root().
+
+    Used for existence checks, listing, mtime — operations that don't have a
+    clean local-vs-S3 native API otherwise. Read/write of file contents should
+    just pass data_uri() to pandas / pyarrow / rasterio directly."""
+    import fsspec  # local import — fsspec is only needed when this is called
+
+    if s3_enabled():
+        return fsspec.filesystem(
+            "s3",
+            key=os.environ.get("AWS_ACCESS_KEY_ID"),
+            secret=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            client_kwargs={"endpoint_url": os.environ["AWS_ENDPOINT_URL"]}
+            if os.environ.get("AWS_ENDPOINT_URL")
+            else {},
+        )
+    return fsspec.filesystem("file")
+
+
+def db_path() -> Path:
+    """Local sqlite database path. Always local — sqlite doesn't run on S3."""
+    override = os.environ.get("EIA_DB_PATH")
+    if override:
+        return Path(override)
+    base = Path(os.environ.get("DATA_DIR", str(REPO_ROOT / "data")))
+    return base / "eia-dashboard" / "eia_data.db"
