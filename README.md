@@ -5,6 +5,7 @@ Self-hosted oil markets dashboard:
 - **US crude inventories** — EIA Weekly Petroleum Status Report (WPSR)
 - **Global supply / demand** — EIA Short-Term Energy Outlook (STEO)
 - **Regional inventories** — by PADD region with WoW + YoY deltas
+- **IEA Oil Market Report** — Tables 1/1a/1b from the monthly free abridged OMR PDF
 - **Tanker positions** — AIS (aisstream.io) + Sentinel-1 SAR (Copernicus / CDSE)
 
 All data is fetched from public sources you authenticate to with your own
@@ -35,6 +36,10 @@ uv sync                          # or: python -m venv .venv && pip install -r re
 .venv/bin/uvicorn app:app --port 8050
 # → http://localhost:8050
 ```
+
+> **System dep**: the IEA OMR pipeline shells out to `pdftotext` (poppler-utils).
+> Install with `apt install poppler-utils` (Debian/Ubuntu) or `brew install poppler` (macOS).
+> The Docker image bundles it. Without it the OMR card stays empty; everything else works.
 
 The dashboard auto-pulls EIA on first boot (no key needed; it falls back to
 public XLS downloads). AIS and SAR ingestion are opt-in via the **Setup**
@@ -93,6 +98,7 @@ job runs and refreshes the relevant chart panels when it completes.
 | Pipeline | Trigger button | Typical duration | Notes |
 |---|---|---|---|
 | EIA + STEO | "Pull EIA data" | ~30 s | Auto-runs on first dashboard boot. |
+| IEA OMR | "Pull IEA OMR" | ~10 s | Free abridged release auto-discovered from iea.org; set `OMR_PDF_URL` to override. Re-runs monthly on the 14th. |
 | AIS census | "Run AIS census (24h)" | 24 h (configurable) | Discovers crude-tanker MMSIs to filter on. Run once, then keep the manifest. |
 | AIS Phase 1 | "Pull positions" | 30 min | Snapshot of latest tanker positions. Available after census. Re-runs on a 4 h cron. |
 | SAR ingest | "Run SAR ingest" | ~10–20 min | Sentinel-1 IW GRD over each configured AOI → CFAR detect → cluster. Re-runs weekly. |
@@ -128,9 +134,11 @@ The scheduler skips any job whose credentials are missing — so a setup with
 | `GET /api/data/yoy?series=…` | Year-over-year overlay for one series |
 | `GET /api/regional` | PADD-level inventory map |
 | `GET /api/global?months=N` | STEO monthly OECD/world supply-demand |
+| `GET /api/omr` | Latest IEA OMR issue's Table 1 headline series (demand, supply, call-on-OPEC, stock changes) |
 | `GET /api/ships` | Latest AIS tanker positions |
 | `GET /api/sar_detections` | Transient over-water SAR clusters across AOIs |
 | `POST /api/ingest/eia` | Kick EIA + STEO refresh (idempotent) |
+| `POST /api/ingest/omr` | Pull the latest free IEA OMR PDF + parse Tables 1/1a/1b |
 | `POST /api/ingest/ais` | Kick AIS Phase 1 (30 min capture) |
 | `POST /api/ingest/ais-census?duration_seconds=N` | Kick AIS Phase 0 census |
 | `POST /api/ingest/sar` | Kick SAR ingest + detect + aggregate |
@@ -149,6 +157,7 @@ oil-inventory-dashboard/
 ├── pipelines/            One process per file, all CLI-invocable
 │   ├── _env.py                   .env loader + feature gates
 │   ├── steo.py                   EIA STEO monthly xlsx
+│   ├── omr.py                    IEA OMR monthly PDF (Tables 1/1a/1b)
 │   ├── aisstream_census.py       Phase 0 baseline census
 │   ├── aisstream_phase1.py       Phase 1 position collector
 │   ├── aisstream_snapshot_from_census.py
@@ -204,6 +213,7 @@ pipelines themselves.
 | Variable | Default | Purpose |
 |---|---|---|
 | `EIA_API_KEY` | (unset → XLS fallback) | EIA v2 API key |
+| `OMR_PDF_URL` | (unset → try auto-discover from iea.org) | Pin a specific OMR PDF URL. **In practice required**: iea.org's Cloudflare bot detection 403s plain HTTP clients, so monthly auto-discovery often fails — paste the blob URL from the report page manually each month |
 | `AISSTREAM_API_KEY` | (unset → AIS disabled) | aisstream.io WebSocket key |
 | `S3_BUCKET` | (unset → local mode) | When set, dashboard reads parquet + SAR rasters from `s3://<bucket>/...` |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | (unset → local mode) | S3 credentials. Required alongside `S3_BUCKET` |

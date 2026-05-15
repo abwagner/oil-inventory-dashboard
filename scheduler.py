@@ -11,6 +11,11 @@ Scheduled jobs:
   cross-acquisition aggregate. Dashboard's /api/sar_detections picks up the
   refreshed clusters.parquet on next request. Skipped if SAR_ENABLED=false
   or CDSE creds are missing.
+- omr_ingest: monthly on the 14th, 18:00 UTC. IEA OMR drops mid-month
+  (typically the 11th–14th); 14th covers late releases without slipping into
+  the next month. Discovery walks back through monthly URLs so a one-day
+  miss still picks up the right issue. Reschedule via OMR_PDF_URL when you
+  want to backfill a specific historical issue.
 
 Configuration via env (see .env.example):
 - DATA_DIR (default /data): root for AIS, SAR, EIA storage on disk.
@@ -102,6 +107,26 @@ def run_ais_phase1():
         log.error("ais_phase1 failed (exit %s)", e.returncode)
 
 
+# --- Job: IEA OMR (monthly) -----------------------------------------------
+
+def run_omr_ingest():
+    """Pull the latest free OMR PDF, parse Tables 1/1a/1b, upsert into sqlite.
+
+    Reaches into pipelines/omr.py rather than going via the dashboard's HTTP
+    endpoint to keep the scheduler decoupled (it doesn't need the FastAPI app
+    running). Failures are logged and swallowed — the next cron tick retries.
+    """
+    cmd = [PYTHON, str(PIPELINES / "omr.py")]
+    log.info("omr_ingest starting: %s", " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True)
+        log.info("omr_ingest done")
+    except subprocess.CalledProcessError as e:
+        log.warning("omr_ingest failed (exit %s) — IEA may not have published "
+                    "a free version this month; will retry next cron tick",
+                    e.returncode)
+
+
 # --- Job: SAR ingest + detect + aggregate ---------------------------------
 
 def run_sar_ingest():
@@ -176,6 +201,11 @@ def main():
             log.info("first-run AIS Phase 1 queued for %s (manifest present, snapshot stale/missing)", kick_at.isoformat())
     else:
         log.warning("AISSTREAM_API_KEY not set — skipping ais_phase1 schedule")
+
+    # OMR: monthly on the 14th at 18:00 UTC. Always scheduled — no creds needed
+    # for the free release. Pipeline degrades cleanly when IEA hasn't published.
+    scheduler.add_job(run_omr_ingest, "cron", day=14, hour=18, minute=0,
+                      id="omr_ingest", max_instances=1, coalesce=True)
 
     if sar:
         # SAR ingest: weekly, Sunday 06:00 UTC. Costs Sentinel Hub PUs —

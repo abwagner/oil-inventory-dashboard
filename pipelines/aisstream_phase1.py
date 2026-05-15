@@ -170,11 +170,26 @@ async def collect_positions(
                         }
                     elif mtype == "ShipStaticData":
                         ssd = (msg.get("Message") or {}).get("ShipStaticData") or {}
+                        # AIS Type 5 reports 4 reference-point dimensions:
+                        # A=bow, B=stern, C=port, D=starboard (meters from the
+                        # transponder antenna). Length = A+B, beam = C+D.
+                        # aisstream typically serializes as `Dimension: {A,B,C,D}`;
+                        # fall back to flat `DimensionA/B/C/D` if a future API
+                        # rev flattens the object.
+                        dim = ssd.get("Dimension") or {}
+                        dim_a = dim.get("A") if isinstance(dim, dict) else ssd.get("DimensionA")
+                        dim_b = dim.get("B") if isinstance(dim, dict) else ssd.get("DimensionB")
+                        dim_c = dim.get("C") if isinstance(dim, dict) else ssd.get("DimensionC")
+                        dim_d = dim.get("D") if isinstance(dim, dict) else ssd.get("DimensionD")
+                        length_m = (dim_a + dim_b) if (dim_a and dim_b) else None
+                        beam_m = (dim_c + dim_d) if (dim_c and dim_d) else None
                         static[mmsi] = {
                             "name": (ssd.get("Name") or "").strip() or None,
                             "destination": (ssd.get("Destination") or "").strip() or None,
                             "max_draught_m": ssd.get("MaximumStaticDraught"),
                             "imo": ssd.get("ImoNumber"),
+                            "length_m": length_m,
+                            "beam_m": beam_m,
                         }
 
         except asyncio.TimeoutError:
@@ -206,6 +221,8 @@ async def collect_positions(
             "max_draught_m": s.get("max_draught_m") or m.get("max_draught_m"),
             "destination": (s.get("destination")
                             or (m.get("destination") or "").strip() or None),
+            "length_m": s.get("length_m") or m.get("length_m"),
+            "beam_m": s.get("beam_m") or m.get("beam_m"),
         })
     return rows
 
