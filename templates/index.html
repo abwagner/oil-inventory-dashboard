@@ -232,6 +232,15 @@
   <div class="chart-wrap"><canvas id="productsChart"></canvas></div>
 </div>
 
+<!-- Chart: Refinery utilization year-over-year -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Refinery utilization — year-over-year</div>
+    <div class="chart-legend" id="yoyLegend"></div>
+  </div>
+  <div class="chart-wrap"><canvas id="yoyChart"></canvas></div>
+</div>
+
 <!-- Section: Regional (PADD) Inventories — hidden pending broader model.
      /api/regional still serves data; the JS renderer is also short-circuited
      (see renderRegionalMap call in loadData). Uncomment to re-enable. -->
@@ -465,6 +474,93 @@ function renderProductsChart(data) {
         y1: { position: 'right', title: { display: true, text: 'Distillates (Mbbl)' }, grid: noGrid }
       }
     }
+  });
+}
+
+// ---- YoY Utilization Chart ----
+async function renderYoyChart() {
+  destroyChart('yoy');
+  const resp = await fetch('/api/data/yoy?series=utilization');
+  const yoy = await resp.json();
+
+  const labels = yoy.map(r => 'Wk ' + r.wk);
+  const years = Object.keys(yoy[0]).filter(k => k.startsWith('y')).sort();
+  const currentYear = years[years.length - 1];
+  const prevYear = years[years.length - 2];
+  const prev2Year = years[years.length - 3];
+
+  const colors = {
+    [currentYear]: { border: '#3b82f6', width: 2.5 },
+    [prevYear]: { border: '#f59e0b', width: 1.5, dash: [6,3] },
+    [prev2Year]: { border: '#71717a', width: 1.5, dash: [2,3] },
+  };
+
+  const datasets = [
+    {
+      label: '5-yr avg', data: yoy.map(r => r.avg5),
+      borderColor: 'rgba(59,130,246,0.2)', backgroundColor: 'rgba(59,130,246,0.06)',
+      borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, order: 4
+    }
+  ];
+
+  for (const yr of [prev2Year, prevYear, currentYear]) {
+    const c = colors[yr];
+    datasets.push({
+      label: yr.replace('y', ''), data: yoy.map(r => r[yr]),
+      borderColor: c.border, backgroundColor: c.border,
+      borderWidth: c.width, borderDash: c.dash || [],
+      pointRadius: 0, pointHoverRadius: 4, tension: 0.3, spanGaps: false,
+      order: yr === currentYear ? 1 : 3
+    });
+  }
+
+  // Legend
+  document.getElementById('yoyLegend').innerHTML = `
+    <span><span class="legend-line" style="background:${colors[currentYear].border}"></span>${currentYear.replace('y','')}</span>
+    <span><span class="legend-dash" style="border-color:${colors[prevYear].border}"></span>${prevYear.replace('y','')}</span>
+    <span><span class="legend-dot" style="border-color:${colors[prev2Year].border}"></span>${prev2Year.replace('y','')}</span>
+    <span><span class="legend-fill" style="background:rgba(59,130,246,0.15)"></span>5-yr avg</span>
+  `;
+
+  // Find "now" index: latest non-null value in current year
+  let nowIdx = 0;
+  for (let i = yoy.length - 1; i >= 0; i--) {
+    if (yoy[i][currentYear] != null) { nowIdx = i; break; }
+  }
+
+  const nowLine = {
+    id: 'nowLine',
+    afterDatasetsDraw(chart) {
+      const {ctx, chartArea: {top, bottom}, scales: {x}} = chart;
+      const xp = x.getPixelForValue(nowIdx);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(xp, top); ctx.lineTo(xp, bottom); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '11px DM Sans';
+      ctx.fillText('now', xp + 4, top + 13);
+      ctx.restore();
+    }
+  };
+
+  charts.yoy = new Chart(document.getElementById('yoyChart'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => c.parsed.y != null ? `${c.dataset.label}: ${c.parsed.y.toFixed(1)}%` : `${c.dataset.label}: –` } }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 13 }, grid: noGrid },
+        y: { title: { display: true, text: 'Utilization %' }, min: 78, max: 98, grid: gridOpts,
+             ticks: { callback: v => v + '%' } }
+      }
+    },
+    plugins: [nowLine]
   });
 }
 
@@ -1122,6 +1218,7 @@ async function loadData() {
   renderStats(rawData);
   renderMainChart(rawData);
   renderProductsChart(rawData);
+  await renderYoyChart();
 
   // Fetch both STEO and OMR up front; the Global section's stats + supply/demand
   // chart merge them. Either source may be empty; renderers handle null/undefined.
