@@ -209,8 +209,25 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        -- Weekly snapshots of SAR floating-storage counts per terminal.
+        -- One row per (observed_at, terminal_name). observed_at is the date
+        -- portion of the latest SAR cluster observation across all AOIs at
+        -- the time the snapshot was taken — i.e. the "as_of" of /api/sar_
+        -- floating_storage. The PK ensures repeated calls within a single
+        -- observation window upsert rather than duplicate.
+        CREATE TABLE IF NOT EXISTS sar_floating_storage_history (
+            observed_at      TEXT NOT NULL,
+            terminal_name    TEXT NOT NULL,
+            persistent_count INTEGER,
+            mean_sigma0_db   REAL,
+            PRIMARY KEY (observed_at, terminal_name)
+        );
         CREATE INDEX IF NOT EXISTS idx_eia_series_date ON eia_weekly(series_id, date);
         CREATE INDEX IF NOT EXISTS idx_steo_series_date ON steo_monthly(series_id, date);
+        CREATE INDEX IF NOT EXISTS idx_sar_fs_observed_at
+            ON sar_floating_storage_history(observed_at);
+        CREATE INDEX IF NOT EXISTS idx_sar_fs_terminal
+            ON sar_floating_storage_history(terminal_name);
     """
     )
     # OMR schema lives alongside in the same DB. The pipeline owns its CREATE
@@ -902,13 +919,63 @@ def _load_persistent_water_clusters() -> tuple[pd.DataFrame, str | None]:
     return pd.concat(frames, ignore_index=True), last_seen_global
 
 
+def _snapshot_floating_storage(
+    conn: sqlite3.Connection, observed_at: str, terminals: list[dict],
+) -> int:
+    """Upsert per-terminal counts into the history table. Idempotent on
+    (observed_at, terminal_name) so repeated calls within the same SAR
+    observation window don't multiply rows. Returns row count inserted/
+    replaced."""
+    rows = [
+        (observed_at, t["name"], t["persistent_count"], t.get("mean_sigma0_db"))
+        for t in terminals
+    ]
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT OR REPLACE INTO sar_floating_storage_history "
+        "(observed_at, terminal_name, persistent_count, mean_sigma0_db) "
+        "VALUES (?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def _floating_storage_history(
+    conn: sqlite3.Connection, days: int,
+) -> dict[str, list[dict]]:
+    """Read per-terminal history for the last `days` days. Returns a dict
+    keyed by terminal_name; each value is an ordered list of {observed_at,
+    count, sigma0} oldest-first."""
+    cutoff = (datetime.now(tz=timezone.utc).date() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT observed_at, terminal_name, persistent_count, mean_sigma0_db "
+        "FROM sar_floating_storage_history WHERE observed_at >= ? "
+        "ORDER BY terminal_name, observed_at",
+        (cutoff,),
+    ).fetchall()
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["terminal_name"], []).append({
+            "observed_at": r["observed_at"],
+            "persistent_count": r["persistent_count"],
+            "mean_sigma0_db": r["mean_sigma0_db"],
+        })
+    return out
+
+
 @app.get("/api/sar_floating_storage")
-async def get_sar_floating_storage():
+async def get_sar_floating_storage(history_days: int = Query(default=120, ge=14, le=730)):
     """Count of persistent (>=3-scene) over-water SAR clusters near each
     named terminal hotspot. A high count at e.g. Singapore Eastern OPL
     implies floating-storage build-up (anchored tankers used as
-    contango-trade storage). Counts are snapshot-only; week-over-week
-    history isn't accumulated yet (Phase 3b).
+    contango-trade storage).
+
+    Each call snapshots the current counts into `sar_floating_storage_history`
+    keyed on (observed_at, terminal_name) — idempotent within a single SAR
+    observation window. As the weekly SAR cron progresses, history
+    accumulates and the response's per-terminal `history` array grows.
 
     Methodology per TDD §12.3: persistent clusters within each terminal's
     radius are counted. Caveats:
@@ -945,13 +1012,33 @@ async def get_sar_floating_storage():
             "mean_sigma0_db": (round(mean_sigma0, 1) if mean_sigma0 is not None else None),
         })
 
+    # Accumulate weekly snapshots. observed_at is the date portion of the
+    # latest SAR cluster timestamp (the data's "as of"), not now() — keeps
+    # the time series tied to data freshness rather than view freshness.
+    observed_at: str | None = None
+    if last_seen:
+        # last_seen is e.g. "2026-05-14T00:26:54Z" — take date portion.
+        observed_at = str(last_seen)[:10]
+        try:
+            conn = get_db()
+            _snapshot_floating_storage(conn, observed_at, out)
+            history = _floating_storage_history(conn, history_days)
+        finally:
+            conn.close()
+        # Attach per-terminal history (oldest-first) to each terminal record.
+        for term in out:
+            term["history"] = history.get(term["name"], [])
+
     return JSONResponse({
         "as_of": last_seen,
+        "observed_at": observed_at,
         "terminals": out,
         "methodology": (
             "Counts persistent (>=3-scene) over-water SAR clusters within each "
             "terminal's radius. Vessel count, not volume — SAR at ~120 m/px "
-            "cannot distinguish tanker class. See TDD §12.3."
+            "cannot distinguish tanker class. Each call snapshots into "
+            "sar_floating_storage_history; week-over-week change in `history` "
+            "is the actionable signal. See TDD §12.3."
         ),
     })
 

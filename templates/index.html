@@ -355,6 +355,17 @@
   <div class="chart-wrap" style="height: 420px;"><canvas id="floatingStorageChart"></canvas></div>
 </div>
 
+<!-- Week-over-week trend at top terminals (Phase 3b — TDD §12.3) -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Floating-storage trend at top terminals</div>
+    <div class="chart-legend" id="floatingStorageTrendLegend">
+      <span style="color:var(--text3)">accumulates 1 sample per weekly SAR cron — w/w change is the actionable signal</span>
+    </div>
+  </div>
+  <div class="chart-wrap"><canvas id="floatingStorageTrendChart"></canvas></div>
+</div>
+
 <div class="footnote" id="footNote"></div>
 
 <script>
@@ -840,9 +851,11 @@ async function renderShipMap() {
 // ---- Floating storage: persistent SAR clusters at named terminals (TDD §12.3) ----
 async function renderFloatingStorage() {
   destroyChart('floatingStorage');
+  destroyChart('floatingStorageTrend');
   const r = await fetch('/api/sar_floating_storage');
   const body = await r.json();
   const terminals = (body.terminals || []).slice();
+  renderFloatingStorageTrend(terminals);
   // Sort descending by persistent_count so the busiest hotspots are at the
   // top of a horizontal bar chart. Zero-count terminals stay visible (they
   // signal "no SAR coverage yet" for that region) but at the bottom.
@@ -885,6 +898,78 @@ async function renderFloatingStorage() {
       }
     }
   });
+}
+
+// Week-over-week trend chart — multi-line with one line per top-N terminal.
+// On first deploy each terminal has 1 history sample (today's snapshot); as
+// the weekly SAR cron progresses, the lines build out. Designed so users
+// don't see an empty chart on day-one — but the actionable view is several
+// weeks in.
+function renderFloatingStorageTrend(terminals) {
+  const palette = [
+    { border: '#f59e0b', fill: 'rgba(245,158,11,0.15)' },  // amber
+    { border: '#3b82f6', fill: 'rgba(59,130,246,0.15)' },  // blue
+    { border: '#10b981', fill: 'rgba(16,185,129,0.15)' },  // green
+    { border: '#a78bfa', fill: 'rgba(167,139,250,0.15)' }, // purple
+    { border: '#ef4444', fill: 'rgba(239,68,68,0.15)' },   // red
+    { border: '#71717a', fill: 'rgba(113,113,122,0.15)' }, // gray
+  ];
+  // Pick the top 6 terminals by current count; ignore ones with no history.
+  const withHistory = terminals.filter(t => (t.history || []).length > 0);
+  withHistory.sort((a, b) => (b.persistent_count || 0) - (a.persistent_count || 0));
+  const top = withHistory.slice(0, 6);
+
+  // Union of all observed_at values, sorted ascending — chart's x-axis.
+  const allDates = new Set();
+  for (const t of top) for (const h of t.history) allDates.add(h.observed_at);
+  const labels = [...allDates].sort();
+
+  const datasets = top.map((t, i) => {
+    const c = palette[i % palette.length];
+    const byDate = Object.fromEntries(
+      (t.history || []).map(h => [h.observed_at, h.persistent_count])
+    );
+    return {
+      label: t.name,
+      data: labels.map(d => byDate[d] ?? null),
+      borderColor: c.border,
+      backgroundColor: c.border,
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 6,
+      tension: 0.2,
+      spanGaps: false,
+    };
+  });
+
+  // Legend swatches
+  const legendHtml = top.map((t, i) => {
+    const c = palette[i % palette.length];
+    return `<span><span class="legend-line" style="background:${c.border}"></span>${t.name}</span>`;
+  }).join(' ') +
+    ` <span style="color:var(--text3)">· accumulates 1 sample per weekly SAR cron — w/w change is the actionable signal</span>`;
+  const legendEl = document.getElementById('floatingStorageTrendLegend');
+  if (legendEl) legendEl.innerHTML = legendHtml;
+
+  charts.floatingStorageTrend = new Chart(
+    document.getElementById('floatingStorageTrendChart'),
+    {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y ?? '–'}` } }
+        },
+        scales: {
+          x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+          y: { title: { display: true, text: 'persistent clusters' }, grid: gridOpts, beginAtZero: true }
+        }
+      }
+    }
+  );
 }
 
 // ---- Global Inventory Charts ----
