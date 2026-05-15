@@ -294,11 +294,11 @@
 <div class="grid-2">
   <div class="chart-section">
     <div class="chart-header">
-      <div class="chart-title">World supply vs demand (quarterly, IEA OMR)</div>
+      <div class="chart-title">World supply vs demand (quarterly)</div>
       <div class="chart-legend">
         <span><span class="legend-line" style="background:var(--green)"></span>Supply</span>
         <span><span class="legend-dash" style="border-color:var(--amber)"></span>Demand</span>
-        <span style="color:var(--text3)">supply line ends at current quarter — IEA doesn't forecast OPEC supply forward</span>
+        <span style="color:var(--text3)">IEA OMR primary · EIA STEO quarterly-avg fills any gaps</span>
       </div>
     </div>
     <div class="chart-wrap"><canvas id="balanceChart"></canvas></div>
@@ -831,6 +831,35 @@ function _periodSortKey(p) {
   return m ? (2000 + +m[2]) * 10 + +m[1] : 0;
 }
 
+// STEO is monthly ('YYYY-MM'); the OMR chart is quarterly. Bucket STEO
+// monthlies into quarterly averages so they can fill quarters OMR doesn't
+// have — most importantly, when OMR hasn't been ingested at all and the
+// chart would otherwise be blank.
+function _quarterKey(monthStr) {
+  if (!monthStr) return null;
+  const [y, m] = String(monthStr).slice(0, 7).split('-').map(Number);
+  if (!y || !m) return null;
+  return `${Math.floor((m - 1) / 3) + 1}Q${String(y).slice(-2)}`;
+}
+function _steoToQuarterly(rows) {
+  const buckets = {};
+  for (const r of (rows || [])) {
+    const k = _quarterKey(r.date);
+    if (!k) continue;
+    (buckets[k] ??= { prod: [], cons: [] });
+    if (r.world_production != null) buckets[k].prod.push(r.world_production);
+    if (r.world_consumption != null) buckets[k].cons.push(r.world_consumption);
+  }
+  const out = {};
+  for (const [k, b] of Object.entries(buckets)) {
+    out[k] = {
+      supply: b.prod.length ? b.prod.reduce((a, c) => a + c, 0) / b.prod.length : null,
+      demand: b.cons.length ? b.cons.reduce((a, c) => a + c, 0) / b.cons.length : null,
+    };
+  }
+  return out;
+}
+
 function renderGlobalStats(steoData, omrBody) {
   // STEO cards (latest monthly observation) + OMR cards (latest quarterly).
   const steoLast = steoData.length ? steoData[steoData.length - 1] : null;
@@ -910,14 +939,12 @@ function renderOecdChart(data) {
   });
 }
 
-// Combined supply/demand chart, OMR only.
-// We don't fall back to STEO here on purpose — STEO and OMR can diverge by
-// several Mbpd in stressed periods (STEO models near-term disruption scenarios
-// while OMR conservatively stops at the latest known quarter), and the
-// resulting line jumps make the chart misleading. Better to show OMR's view
-// honestly and let the Supply line end where IEA's forecast ends (typically
-// the current quarter, since IEA doesn't forecast OPEC supply forward).
-function renderBalanceChart(_steoData, omrBody) {
+// Combined supply/demand chart. OMR primary (uses Table 1b which extends
+// supply through 4Q26 by assuming the OPEC+ current-agreement); STEO monthly
+// resampled to quarterly fills any quarter OMR doesn't cover — most
+// importantly, when OMR hasn't been ingested yet the chart still renders
+// STEO history instead of going blank.
+function renderBalanceChart(steoData, omrBody) {
   destroyChart('balance');
   const omrSup = {}, omrDem = {};
   (omrBody?.series?.total_supply || []).forEach(r => {
@@ -926,10 +953,13 @@ function renderBalanceChart(_steoData, omrBody) {
   (omrBody?.series?.total_demand || []).forEach(r => {
     if (r.period_type === 'quarter') omrDem[r.period] = r.value;
   });
-  const allKeys = new Set([...Object.keys(omrSup), ...Object.keys(omrDem)]);
+  const steoQ = _steoToQuarterly(steoData || []);
+  const allKeys = new Set([
+    ...Object.keys(omrSup), ...Object.keys(omrDem), ...Object.keys(steoQ),
+  ]);
   const labels = [...allKeys].sort((a, b) => _periodSortKey(a) - _periodSortKey(b));
-  const supply = labels.map(k => omrSup[k] ?? null);
-  const demand = labels.map(k => omrDem[k] ?? null);
+  const supply = labels.map(k => omrSup[k] ?? steoQ[k]?.supply ?? null);
+  const demand = labels.map(k => omrDem[k] ?? steoQ[k]?.demand ?? null);
 
   charts.balance = new Chart(document.getElementById('balanceChart'), {
     type: 'line',
