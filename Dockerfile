@@ -46,4 +46,5 @@ EXPOSE 8050
 
 # Default: dashboard. The scheduler container in docker-compose overrides this
 # with `command: ["python", "scheduler.py"]`.
+RUN mkdir -p /etc/tanker
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8050", "--no-access-log"]
