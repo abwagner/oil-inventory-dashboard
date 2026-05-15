@@ -343,6 +343,18 @@
   </div>
 </div>
 
+<!-- Floating-storage signal: persistent SAR clusters near named terminals -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Persistent SAR clusters near major terminals</div>
+    <div class="chart-legend">
+      <span><span class="legend-line" style="background:#f59e0b"></span>Persistent cluster count</span>
+      <span style="color:var(--text3)">snapshot count of ≥3-scene over-water clusters within terminal radius (TDD §12.3)</span>
+    </div>
+  </div>
+  <div class="chart-wrap" style="height: 420px;"><canvas id="floatingStorageChart"></canvas></div>
+</div>
+
 <div class="footnote" id="footNote"></div>
 
 <script>
@@ -825,6 +837,56 @@ async function renderShipMap() {
     (aoisSummary ? ` · SAR AOIs: ${aoisSummary}` : '');
 }
 
+// ---- Floating storage: persistent SAR clusters at named terminals (TDD §12.3) ----
+async function renderFloatingStorage() {
+  destroyChart('floatingStorage');
+  const r = await fetch('/api/sar_floating_storage');
+  const body = await r.json();
+  const terminals = (body.terminals || []).slice();
+  // Sort descending by persistent_count so the busiest hotspots are at the
+  // top of a horizontal bar chart. Zero-count terminals stay visible (they
+  // signal "no SAR coverage yet" for that region) but at the bottom.
+  terminals.sort((a, b) => (b.persistent_count || 0) - (a.persistent_count || 0));
+  const labels = terminals.map(t => t.name);
+  const counts = terminals.map(t => t.persistent_count || 0);
+  charts.floatingStorage = new Chart(document.getElementById('floatingStorageChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Persistent SAR clusters',
+        data: counts,
+        backgroundColor: counts.map(c => c > 0 ? 'rgba(245,158,11,0.7)' : 'rgba(120,120,120,0.25)'),
+        borderColor: counts.map(c => c > 0 ? '#f59e0b' : '#555'),
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const t = terminals[c.dataIndex];
+              return [
+                `${c.parsed.x} persistent cluster(s)`,
+                `radius: ${t.radius_km} km`,
+                t.description,
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'persistent cluster count' }, grid: gridOpts, beginAtZero: true },
+        y: { grid: noGrid, ticks: { font: { size: 11 } } }
+      }
+    }
+  });
+}
+
 // ---- Global Inventory Charts ----
 
 function _periodSortKey(p) {
@@ -1276,6 +1338,7 @@ async function loadData() {
   renderBalanceChart(globalData, omrBody);
 
   await renderShipMap();
+  await renderFloatingStorage();
 
   const last = rawData[rawData.length - 1];
   document.getElementById('footNote').textContent =

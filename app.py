@@ -853,6 +853,146 @@ async def get_sar_detections():
     })
 
 
+import _terminals  # noqa: E402  pipelines/_terminals.py — terminal hotspots + haversine
+
+
+def _load_persistent_water_clusters() -> tuple[pd.DataFrame, str | None]:
+    """Return DataFrame of persistent, over-water SAR clusters across all AOIs.
+
+    Columns: aoi, lat, lon, n_scenes, n_detections, sigma0_max_db, first_seen,
+    last_seen. The persistent-and-not-on-land filter is applied here so the
+    callers (`/api/sar_floating_storage`, `/api/sar_anchorages`) don't each
+    re-implement it. Returns (df, last_seen_global) where last_seen_global is
+    the most recent cluster observation across all AOIs (for "as of" display).
+    """
+    sar_root = data_uri("sentinel_sar")
+    fs = storage_fs()
+    if not fs.exists(sar_root):
+        return pd.DataFrame(), None
+
+    frames: list[pd.DataFrame] = []
+    last_seen_global: str | None = None
+    for aoi_uri in sorted(_list_aoi_dirs(fs, sar_root)):
+        aoi_name = aoi_uri.rstrip("/").rsplit("/", 1)[-1]
+        clusters_uri = data_uri("sentinel_sar", aoi_name, "clusters.parquet")
+        if not fs.exists(clusters_uri):
+            continue
+        df = pd.read_parquet(clusters_uri)
+        if df.empty:
+            continue
+        for c in ("lat", "lon", "sigma0_max_db", "n_scenes", "n_detections"):
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        for c in ("is_persistent", "any_on_land"):
+            if c in df.columns:
+                df[c] = df[c].astype(bool)
+        kept = df[df["is_persistent"] & (~df["any_on_land"])].copy()
+        if kept.empty:
+            continue
+        kept["aoi"] = aoi_name
+        # Track latest observation timestamp globally
+        if "last_seen" in kept.columns:
+            ls = str(kept["last_seen"].max())
+            if ls and (last_seen_global is None or ls > last_seen_global):
+                last_seen_global = ls
+        frames.append(kept)
+
+    if not frames:
+        return pd.DataFrame(), last_seen_global
+    return pd.concat(frames, ignore_index=True), last_seen_global
+
+
+@app.get("/api/sar_floating_storage")
+async def get_sar_floating_storage():
+    """Count of persistent (>=3-scene) over-water SAR clusters near each
+    named terminal hotspot. A high count at e.g. Singapore Eastern OPL
+    implies floating-storage build-up (anchored tankers used as
+    contango-trade storage). Counts are snapshot-only; week-over-week
+    history isn't accumulated yet (Phase 3b).
+
+    Methodology per TDD §12.3: persistent clusters within each terminal's
+    radius are counted. Caveats:
+      - SAR at ~120 m/px can't distinguish VLCC from Suezmax, so this is
+        a vessel COUNT, not a volume estimate.
+      - Persistent ≥3 scenes filter catches vessels visible across at least
+        ~9 days; quick port calls aren't included.
+      - Coverage is limited to configured AOIs (see scheduler.AOIS).
+        Terminals in unconfigured regions will report 0 erroneously.
+    """
+    df, last_seen = _load_persistent_water_clusters()
+    out: list[dict] = []
+    for term in _terminals.iter_terminals():
+        if df.empty:
+            count = 0
+            mean_sigma0 = None
+        else:
+            # Vectorised haversine across the cluster set
+            import numpy as np
+            lat1 = math.radians(term["lat"])
+            lat2 = np.radians(df["lat"].to_numpy())
+            dlat = lat2 - lat1
+            dlon = np.radians(df["lon"].to_numpy() - term["lon"])
+            a = (np.sin(dlat / 2) ** 2
+                 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2)
+            dist_km = 2 * 6371.0 * np.arcsin(np.sqrt(a))
+            mask = dist_km <= term["radius_km"]
+            count = int(mask.sum())
+            mean_sigma0 = (float(df.loc[mask, "sigma0_max_db"].mean())
+                           if count and "sigma0_max_db" in df.columns else None)
+        out.append({
+            **term,
+            "persistent_count": count,
+            "mean_sigma0_db": (round(mean_sigma0, 1) if mean_sigma0 is not None else None),
+        })
+
+    return JSONResponse({
+        "as_of": last_seen,
+        "terminals": out,
+        "methodology": (
+            "Counts persistent (>=3-scene) over-water SAR clusters within each "
+            "terminal's radius. Vessel count, not volume — SAR at ~120 m/px "
+            "cannot distinguish tanker class. See TDD §12.3."
+        ),
+    })
+
+
+@app.get("/api/sar_anchorages")
+async def get_sar_anchorages(grid_deg: float = Query(default=0.5, ge=0.1, le=2.0)):
+    """0.5°-grid density of persistent over-water SAR clusters.
+
+    Useful for spotting anchorage hotspots that ISN'T at a named terminal
+    (e.g. growth at an unmapped STS zone). Per TDD §12.3; the actionable
+    view is week-over-week change at named terminals (Phase 3b — not yet
+    accumulated). For now this is a snapshot heatmap source.
+    """
+    df, last_seen = _load_persistent_water_clusters()
+    cells: list[dict] = []
+    if not df.empty:
+        # Bin to grid cells (floor to the grid_deg multiple)
+        df["lat_bin"] = (df["lat"] / grid_deg).apply(math.floor) * grid_deg
+        df["lon_bin"] = (df["lon"] / grid_deg).apply(math.floor) * grid_deg
+        grouped = df.groupby(["lat_bin", "lon_bin"], as_index=False).agg(
+            count=("lat", "size"),
+            mean_sigma0_db=("sigma0_max_db", "mean"),
+        )
+        # Sort by density descending — most actionable first
+        grouped = grouped.sort_values("count", ascending=False)
+        for _, r in grouped.iterrows():
+            cells.append({
+                "lat_bin": float(r["lat_bin"]),
+                "lon_bin": float(r["lon_bin"]),
+                "count": int(r["count"]),
+                "mean_sigma0_db": round(float(r["mean_sigma0_db"]), 1)
+                                  if not pd.isna(r["mean_sigma0_db"]) else None,
+            })
+
+    return JSONResponse({
+        "as_of": last_seen,
+        "grid_deg": grid_deg,
+        "cells": cells,
+    })
+
+
 @app.get("/api/status")
 async def status():
     """Health snapshot — used by the empty-state UI to decide what's missing.
