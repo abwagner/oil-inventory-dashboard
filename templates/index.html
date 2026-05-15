@@ -220,31 +220,6 @@
   <div class="chart-wrap"><canvas id="mainChart"></canvas></div>
 </div>
 
-<!-- Chart 2 & 3 side by side -->
-<div class="grid-2">
-  <!-- Cushing -->
-  <div class="chart-section">
-    <div class="chart-header">
-      <div class="chart-title">Cushing, OK stocks</div>
-      <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--purple)"></span>Mbbl</span>
-      </div>
-    </div>
-    <div class="chart-wrap"><canvas id="cushingChart"></canvas></div>
-  </div>
-
-  <!-- Utilization -->
-  <div class="chart-section">
-    <div class="chart-header">
-      <div class="chart-title">Refinery utilization</div>
-      <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--blue)"></span>Current %</span>
-      </div>
-    </div>
-    <div class="chart-wrap"><canvas id="utilChart"></canvas></div>
-  </div>
-</div>
-
 <!-- Chart: Product inventories -->
 <div class="chart-section">
   <div class="chart-header">
@@ -257,16 +232,10 @@
   <div class="chart-wrap"><canvas id="productsChart"></canvas></div>
 </div>
 
-<!-- Chart 4: Utilization YoY -->
-<div class="chart-section">
-  <div class="chart-header">
-    <div class="chart-title">Refinery utilization — year-over-year</div>
-    <div class="chart-legend" id="yoyLegend"></div>
-  </div>
-  <div class="chart-wrap"><canvas id="yoyChart"></canvas></div>
-</div>
-
-<!-- Section: Regional (PADD) Inventories -->
+<!-- Section: Regional (PADD) Inventories — hidden pending broader model.
+     /api/regional still serves data; the JS renderer is also short-circuited
+     (see renderRegionalMap call in loadData). Uncomment to re-enable. -->
+<!--
 <div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
   <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Regional <span style="color:var(--amber)">Inventories</span></h2>
   <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="regionalSub">US crude stocks by PADD region · weekly (excl SPR) · fill = week-over-week change</p>
@@ -288,16 +257,18 @@
 </div>
 
 <div id="regionalCards" class="stats-row"></div>
+-->
 
-<!-- Section: Global Inventories -->
+
+<!-- Section: Global Inventories & Balance -->
 <div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
-  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Global <span style="color:var(--amber)">Inventories</span></h2>
-  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;">EIA Short-Term Energy Outlook (STEO) monthly data · OECD commercial stocks + supply/demand balance</p>
+  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Global <span style="color:var(--amber)">Inventories &amp; Balance</span></h2>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="globalSub">EIA STEO (monthly stocks + inventory change) · IEA OMR (quarterly supply/demand balance)</p>
 </div>
 
 <div id="globalStats" class="stats-row"></div>
 
-<!-- Chart 5: OECD stocks: US vs Other OECD -->
+<!-- OECD stocks: US vs Other OECD (STEO) -->
 <div class="chart-section">
   <div class="chart-header">
     <div class="chart-title">OECD commercial stocks — US vs rest of OECD</div>
@@ -309,17 +280,19 @@
   <div class="chart-wrap"><canvas id="oecdChart"></canvas></div>
 </div>
 
-<!-- Chart 6 & 7 side by side -->
+<!-- Combined supply/demand (IEA OMR quarterly, STEO monthly resampled as fallback)
+     + World inventory change (STEO) side by side. -->
 <div class="grid-2">
   <div class="chart-section">
     <div class="chart-header">
-      <div class="chart-title">World supply vs demand</div>
+      <div class="chart-title">World supply vs demand (quarterly, IEA OMR)</div>
       <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--green)"></span>Production</span>
-        <span><span class="legend-dash" style="border-color:var(--amber)"></span>Consumption</span>
+        <span><span class="legend-line" style="background:var(--green)"></span>Supply</span>
+        <span><span class="legend-dash" style="border-color:var(--amber)"></span>Demand</span>
+        <span style="color:var(--text3)">supply line ends at current quarter — IEA doesn't forecast OPEC supply forward</span>
       </div>
     </div>
-    <div class="chart-wrap"><canvas id="supplyDemandChart"></canvas></div>
+    <div class="chart-wrap"><canvas id="balanceChart"></canvas></div>
   </div>
 
   <div class="chart-section">
@@ -334,10 +307,11 @@
   </div>
 </div>
 
+
 <!-- Section: Tanker Positions -->
 <div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
   <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Tanker <span style="color:var(--amber)">Positions</span></h2>
-  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="shipsSub">Global crude tanker positions from AIS · positions only — no load state, voyage intent, or identity verification (TDD §9.7)</p>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="shipsSub">Crude on water estimates from AIS-visible fleet — coverage is uneven (heavy NW Europe, sparse Persian Gulf / Red Sea per TDD §4.2.1.1). Directional, not authoritative.</p>
 </div>
 
 <div id="shipsStats" class="stats-row"></div>
@@ -401,12 +375,10 @@ function renderStats(data) {
 
   const cards = [
     { label: 'Crude inv', value: fmt(last.us_stocks_mbbl, 1) + ' Mbbl', delta: delta(last.us_stocks_mbbl, prev?.us_stocks_mbbl) },
-    { label: 'Cushing', value: fmt(last.cushing_mbbl, 1) + ' Mbbl', delta: delta(last.cushing_mbbl, prev?.cushing_mbbl) },
     { label: 'Gasoline', value: fmt(last.gasoline_mbbl, 1) + ' Mbbl', delta: delta(last.gasoline_mbbl, prev?.gasoline_mbbl) },
     { label: 'Distillates', value: fmt(last.distillate_mbbl, 1) + ' Mbbl', delta: delta(last.distillate_mbbl, prev?.distillate_mbbl) },
     { label: 'Production', value: fmt(last.production_mbpd, 2) + ' Mbpd', delta: delta(last.production_mbpd, prev?.production_mbpd) },
     { label: 'Exports', value: fmt(last.exports_mbpd, 2) + ' Mbpd', delta: delta(last.exports_mbpd, prev?.exports_mbpd) },
-    { label: 'Utilization', value: fmt(last.utilization_pct, 1) + '%', delta: delta(last.utilization_pct, prev?.utilization_pct) },
   ];
 
   document.getElementById('statsRow').innerHTML = cards.map(c => `
@@ -460,62 +432,6 @@ function renderMainChart(data) {
   });
 }
 
-// ---- Cushing Chart ----
-function renderCushingChart(data) {
-  destroyChart('cushing');
-  const labels = data.map(d => fmtDate(d.date));
-  charts.cushing = new Chart(document.getElementById('cushingChart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Cushing (Mbbl)', data: data.map(d => d.cushing_mbbl),
-        borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)',
-        borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(2)} Mbbl` } }
-      },
-      scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
-        y: { title: { display: true, text: 'Mbbl' }, grid: gridOpts }
-      }
-    }
-  });
-}
-
-// ---- Utilization Chart (time series) ----
-function renderUtilChart(data) {
-  destroyChart('util');
-  const labels = data.map(d => fmtDate(d.date));
-  charts.util = new Chart(document.getElementById('utilChart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Utilization %', data: data.map(d => d.utilization_pct),
-        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
-        borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(1)}%` } }
-      },
-      scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
-        y: { title: { display: true, text: '%' }, grid: gridOpts, ticks: { callback: v => v + '%' } }
-      }
-    }
-  });
-}
-
 // ---- Products Chart: Gasoline & Distillates ----
 function renderProductsChart(data) {
   destroyChart('products');
@@ -549,93 +465,6 @@ function renderProductsChart(data) {
         y1: { position: 'right', title: { display: true, text: 'Distillates (Mbbl)' }, grid: noGrid }
       }
     }
-  });
-}
-
-// ---- YoY Utilization Chart ----
-async function renderYoyChart() {
-  destroyChart('yoy');
-  const resp = await fetch('/api/data/yoy?series=utilization');
-  const yoy = await resp.json();
-
-  const labels = yoy.map(r => 'Wk ' + r.wk);
-  const years = Object.keys(yoy[0]).filter(k => k.startsWith('y')).sort();
-  const currentYear = years[years.length - 1];
-  const prevYear = years[years.length - 2];
-  const prev2Year = years[years.length - 3];
-
-  const colors = {
-    [currentYear]: { border: '#3b82f6', width: 2.5 },
-    [prevYear]: { border: '#f59e0b', width: 1.5, dash: [6,3] },
-    [prev2Year]: { border: '#71717a', width: 1.5, dash: [2,3] },
-  };
-
-  const datasets = [
-    {
-      label: '5-yr avg', data: yoy.map(r => r.avg5),
-      borderColor: 'rgba(59,130,246,0.2)', backgroundColor: 'rgba(59,130,246,0.06)',
-      borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, order: 4
-    }
-  ];
-
-  for (const yr of [prev2Year, prevYear, currentYear]) {
-    const c = colors[yr];
-    datasets.push({
-      label: yr.replace('y', ''), data: yoy.map(r => r[yr]),
-      borderColor: c.border, backgroundColor: c.border,
-      borderWidth: c.width, borderDash: c.dash || [],
-      pointRadius: 0, pointHoverRadius: 4, tension: 0.3, spanGaps: false,
-      order: yr === currentYear ? 1 : 3
-    });
-  }
-
-  // Legend
-  document.getElementById('yoyLegend').innerHTML = `
-    <span><span class="legend-line" style="background:${colors[currentYear].border}"></span>${currentYear.replace('y','')}</span>
-    <span><span class="legend-dash" style="border-color:${colors[prevYear].border}"></span>${prevYear.replace('y','')}</span>
-    <span><span class="legend-dot" style="border-color:${colors[prev2Year].border}"></span>${prev2Year.replace('y','')}</span>
-    <span><span class="legend-fill" style="background:rgba(59,130,246,0.15)"></span>5-yr avg</span>
-  `;
-
-  // Find "now" index: latest non-null value in current year
-  let nowIdx = 0;
-  for (let i = yoy.length - 1; i >= 0; i--) {
-    if (yoy[i][currentYear] != null) { nowIdx = i; break; }
-  }
-
-  const nowLine = {
-    id: 'nowLine',
-    afterDatasetsDraw(chart) {
-      const {ctx, chartArea: {top, bottom}, scales: {x}} = chart;
-      const xp = x.getPixelForValue(nowIdx);
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4,4]);
-      ctx.beginPath(); ctx.moveTo(xp, top); ctx.lineTo(xp, bottom); ctx.stroke();
-      ctx.fillStyle = 'rgba(255,255,255,0.3)';
-      ctx.font = '11px DM Sans';
-      ctx.fillText('now', xp + 4, top + 13);
-      ctx.restore();
-    }
-  };
-
-  charts.yoy = new Chart(document.getElementById('yoyChart'), {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => c.parsed.y != null ? `${c.dataset.label}: ${c.parsed.y.toFixed(1)}%` : `${c.dataset.label}: –` } }
-      },
-      scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 13 }, grid: noGrid },
-        y: { title: { display: true, text: 'Utilization %' }, min: 78, max: 98, grid: gridOpts,
-             ticks: { callback: v => v + '%' } }
-      }
-    },
-    plugins: [nowLine]
   });
 }
 
@@ -846,52 +675,92 @@ async function renderShipMap() {
   }
 
   // ---- Stats cards ----
+  // 'Crude on water' aggregate comes from /api/ships' new oil_on_water block.
+  // It's an AIS-visible-fleet estimate — uneven coverage caveat in the
+  // subtitle and TDD §9.7. Falls back gracefully when the new fields aren't
+  // present (e.g. snapshot was written by an older Phase 1).
   const total = ships.length;
-  const crude = ships.filter(s => s.ship_type === 80).length;
-  const underway = ships.filter(s => (s.sog || 0) > 0.5).length;
+  const oow = aisData.oil_on_water || {};
+  const totalBbl = oow.total_bbl || 0;
+  const classified = oow.n_classified || 0;
+  const byClass = oow.by_class || {};
+  let topClass = null;
+  let topClassBbl = 0;
+  let topClassN = 0;
+  for (const [cls, v] of Object.entries(byClass)) {
+    if ((v.bbl || 0) > topClassBbl) {
+      topClass = cls; topClassBbl = v.bbl; topClassN = v.n;
+    }
+  }
   const sarCount = sarDets.length;
   const cards = [
-    { label: 'AIS tankers', value: total },
-    { label: 'AIS crude (type 80)', value: crude },
-    { label: 'AIS underway', value: underway },
-    { label: 'SAR vessels (transient)', value: sarCount },
+    { label: 'Crude on water (est)',
+      value: totalBbl ? (totalBbl / 1e6).toFixed(0) + ' Mbbl' : '–',
+      sub: classified ? `from ${classified.toLocaleString()} classified tankers` : 'no class data yet' },
+    { label: 'AIS tankers visible',
+      value: total.toLocaleString(),
+      sub: classified ? `${classified.toLocaleString()} classified · ${(total - classified).toLocaleString()} unsized` : 'awaiting class data' },
+    { label: 'Top class by tonnage',
+      value: topClass ? topClass : '–',
+      sub: topClass ? `${(topClassBbl / 1e6).toFixed(0)} Mbbl · n=${topClassN}` : 'no class data yet' },
+    { label: 'SAR vessels (transient)',
+      value: sarCount.toLocaleString(),
+      sub: '88 m/px · class indistinguishable' },
   ];
   document.getElementById('shipsStats').innerHTML = cards.map(c => `
     <div class="stat-card">
       <div class="stat-label">${c.label}</div>
-      <div class="stat-value">${(c.value || 0).toLocaleString()}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-delta" style="color:var(--text3)">${c.sub || ''}</div>
     </div>
   `).join('');
 
-  // Subtitle
+  // Subtitle: now leads with the AIS-coverage caveat since the headline number
+  // is an aggregate estimate, not a count.
   const aisSnap = aisData.snapshot_at ? String(aisData.snapshot_at).split(' ').slice(0,2).join(' ') : null;
   const sarSnap = sarData.last_seen ? String(sarData.last_seen).slice(0,19) : null;
   const aoisSummary = (sarData.aois || []).map(a => `${a.name} (${a.transient_water_count})`).join(', ');
   document.getElementById('shipsSub').textContent =
-    `AIS tanker positions${aisSnap ? ' through ' + aisSnap : ''} · ` +
-    `SAR vessels${sarSnap ? ' through ' + sarSnap : ''}` +
-    (aoisSummary ? ` · AOIs: ${aoisSummary}` : '') +
-    ` · positions only, no load state / voyage intent / identity verification (TDD §9.7)`;
+    `Crude on water estimates from AIS-visible fleet only — coverage is uneven ` +
+    `(heavy NW Europe, sparse Persian Gulf / Red Sea per TDD §4.2.1.1). Directional, not authoritative. ` +
+    `AIS through ${aisSnap || '–'}` +
+    (sarSnap ? ` · SAR through ${sarSnap}` : '') +
+    (aoisSummary ? ` · SAR AOIs: ${aoisSummary}` : '');
 }
 
 // ---- Global Inventory Charts ----
 
-function renderGlobalStats(data) {
-  if (!data.length) return;
-  const last = data[data.length - 1];
-  const prev = data.length > 1 ? data[data.length - 2] : null;
-  // Find pre-crisis (Feb 2026) value
-  const preCrisis = data.find(d => d.date === '2026-02') || data.find(d => d.date === '2026-01');
+function _periodSortKey(p) {
+  const m = /^([1-4])Q(\d{2})$/.exec(p);
+  return m ? (2000 + +m[2]) * 10 + +m[1] : 0;
+}
 
-  const cards = [
-    { label: 'OECD total', value: fmt(last.oecd_stocks, 0) + ' Mbbl', delta: delta(last.oecd_stocks, prev?.oecd_stocks) },
-    { label: 'US total', value: fmt(last.us_stocks, 0) + ' Mbbl', delta: delta(last.us_stocks, prev?.us_stocks) },
-    { label: 'Other OECD', value: fmt(last.other_oecd_stocks, 0) + ' Mbbl',
-      delta: preCrisis ? { text: (last.other_oecd_stocks - preCrisis.other_oecd_stocks).toFixed(0) + ' from Feb', cls: last.other_oecd_stocks < preCrisis.other_oecd_stocks ? 'down' : 'up' } : {text:'–',cls:''} },
-    { label: 'World inv Δ', value: fmt(last.world_inv_change, 1) + ' Mbpd', delta: { text: last.world_inv_change > 0 ? 'build' : 'draw', cls: last.world_inv_change > 0 ? 'up' : 'down' } },
-    { label: 'Supply−demand', value: fmt((last.world_production||0)-(last.world_consumption||0), 1) + ' Mbpd',
-      delta: { text: 'prod ' + fmt(last.world_production,1) + ' · cons ' + fmt(last.world_consumption,1), cls: '' } },
-  ];
+function renderGlobalStats(steoData, omrBody) {
+  // STEO cards (latest monthly observation) + OMR cards (latest quarterly).
+  const steoLast = steoData.length ? steoData[steoData.length - 1] : null;
+  const steoPrev = steoData.length > 1 ? steoData[steoData.length - 2] : null;
+  const omrQ = (rows) => (rows || []).filter(r => r.period_type === 'quarter').slice(-1)[0];
+  const omrSup = omrQ(omrBody?.series?.total_supply);
+  const omrDem = omrQ(omrBody?.series?.total_demand);
+
+  const cards = [];
+  if (steoLast) {
+    cards.push(
+      { label: 'OECD stocks', value: fmt(steoLast.oecd_stocks, 0) + ' Mbbl', delta: delta(steoLast.oecd_stocks, steoPrev?.oecd_stocks) },
+      { label: 'US stocks', value: fmt(steoLast.us_stocks, 0) + ' Mbbl', delta: delta(steoLast.us_stocks, steoPrev?.us_stocks) },
+      { label: 'World inv Δ', value: fmt(steoLast.world_inv_change, 1) + ' Mbpd',
+        delta: { text: steoLast.world_inv_change > 0 ? 'build' : 'draw', cls: steoLast.world_inv_change > 0 ? 'up' : 'down' } },
+    );
+  }
+  if (omrSup && omrDem) {
+    cards.push(
+      { label: 'Supply (OMR ' + omrSup.period + ')', value: fmt(omrSup.value, 1) + ' Mbpd', delta: { text: '–', cls: '' } },
+      { label: 'Demand (OMR ' + omrDem.period + ')', value: fmt(omrDem.value, 1) + ' Mbpd', delta: { text: '–', cls: '' } },
+      { label: 'Supply − demand', value: fmt(omrSup.value - omrDem.value, 1) + ' Mbpd',
+        delta: { text: omrSup.value > omrDem.value ? 'surplus' : 'deficit',
+                 cls: omrSup.value > omrDem.value ? 'up' : 'down' } },
+    );
+  }
   document.getElementById('globalStats').innerHTML = cards.map(c => `
     <div class="stat-card">
       <div class="stat-label">${c.label}</div>
@@ -899,6 +768,15 @@ function renderGlobalStats(data) {
       <div class="stat-delta ${c.delta.cls}">${c.delta.text}</div>
     </div>
   `).join('');
+}
+
+function renderGlobalSub(omrBody) {
+  const sub = document.getElementById('globalSub');
+  if (!sub) return;
+  const omr = omrBody?.report_date
+    ? ` · OMR through ${omrBody.report_date}`
+    : ' · OMR not ingested yet';
+  sub.textContent = `EIA STEO (monthly stocks + inventory change) · IEA OMR (quarterly supply/demand balance)${omr}`;
 }
 
 function renderOecdChart(data) {
@@ -936,24 +814,38 @@ function renderOecdChart(data) {
   });
 }
 
-function renderSupplyDemandChart(data) {
-  destroyChart('supplyDemand');
-  const labels = data.map(d => d.date);
-  charts.supplyDemand = new Chart(document.getElementById('supplyDemandChart'), {
+// Combined supply/demand chart, OMR only.
+// We don't fall back to STEO here on purpose — STEO and OMR can diverge by
+// several Mbpd in stressed periods (STEO models near-term disruption scenarios
+// while OMR conservatively stops at the latest known quarter), and the
+// resulting line jumps make the chart misleading. Better to show OMR's view
+// honestly and let the Supply line end where IEA's forecast ends (typically
+// the current quarter, since IEA doesn't forecast OPEC supply forward).
+function renderBalanceChart(_steoData, omrBody) {
+  destroyChart('balance');
+  const omrSup = {}, omrDem = {};
+  (omrBody?.series?.total_supply || []).forEach(r => {
+    if (r.period_type === 'quarter') omrSup[r.period] = r.value;
+  });
+  (omrBody?.series?.total_demand || []).forEach(r => {
+    if (r.period_type === 'quarter') omrDem[r.period] = r.value;
+  });
+  const allKeys = new Set([...Object.keys(omrSup), ...Object.keys(omrDem)]);
+  const labels = [...allKeys].sort((a, b) => _periodSortKey(a) - _periodSortKey(b));
+  const supply = labels.map(k => omrSup[k] ?? null);
+  const demand = labels.map(k => omrDem[k] ?? null);
+
+  charts.balance = new Chart(document.getElementById('balanceChart'), {
     type: 'line',
     data: {
       labels,
       datasets: [
-        {
-          label: 'Production (Mbpd)', data: data.map(d => d.world_production),
+        { label: 'Supply (Mbpd)', data: supply,
           borderColor: '#10b981', backgroundColor: '#10b981',
-          borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.2
-        },
-        {
-          label: 'Consumption (Mbpd)', data: data.map(d => d.world_consumption),
+          borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
+        { label: 'Demand (Mbpd)', data: demand,
           borderColor: '#f59e0b', backgroundColor: '#f59e0b',
-          borderWidth: 2, borderDash: [6,3], pointRadius: 2, pointHoverRadius: 5, tension: 0.2
-        }
+          borderWidth: 2, borderDash: [6, 3], pointRadius: 2, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
       ]
     },
     options: {
@@ -963,7 +855,7 @@ function renderSupplyDemandChart(data) {
         tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(1) ?? '–'}` } }
       },
       scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: noGrid },
         y: { title: { display: true, text: 'Mbpd' }, grid: gridOpts }
       }
     }
@@ -1047,6 +939,26 @@ function setupRows(st) {
       statusClass: 'empty',
       btnLabel: 'Refresh',
       btnDisabled: false,
+    });
+  }
+
+  // OMR: show row if no issue ingested yet, if currently running, or on error.
+  // The free OMR PDF availability is conditional (IEA describes it as
+  // "exceptional"), so we don't flag it as stale on age alone.
+  const omr = st.omr || {};
+  const omrIngest = omr.ingest || {status: 'idle'};
+  if (!omr.latest_report || omrIngest.status === 'running' || omrIngest.error) {
+    rows.push({
+      pipeline: 'omr',
+      label: 'IEA Oil Market Report',
+      status: omrIngest.status === 'running'
+        ? `running… (started ${fmtRel(omrIngest.started_at)})`
+        : omrIngest.error
+          ? `error: ${omrIngest.error}`
+          : 'no OMR yet',
+      statusClass: omrIngest.status === 'running' ? 'running' : (omrIngest.error ? 'error' : 'empty'),
+      btnLabel: 'Pull IEA OMR',
+      btnDisabled: omrIngest.status === 'running',
     });
   }
 
@@ -1162,10 +1074,11 @@ function startStatusPolling() {
   const tick = async () => {
     const st = await fetchStatus();
     renderSetupBanner(st);
-    const anyRunning = ['eia', 'ais', 'ais-census', 'sar'].some(p => {
+    const anyRunning = ['eia', 'omr', 'ais', 'ais-census', 'sar'].some(p => {
       const ig = (p === 'ais') ? (st.ais && st.ais.ingest_phase1)
               : (p === 'ais-census') ? (st.ais && st.ais.ingest_census)
               : (p === 'sar') ? (st.sar && st.sar.ingest)
+              : (p === 'omr') ? (st.omr && st.omr.ingest)
               : (st.eia && st.eia.ingest);
       return ig && ig.status === 'running';
     });
@@ -1190,6 +1103,7 @@ async function loadData() {
   // If something's already running (e.g. user hit reload mid-ingest), keep polling.
   const ingests = [
     st.eia && st.eia.ingest,
+    st.omr && st.omr.ingest,
     st.ais && st.ais.ingest_phase1,
     st.ais && st.ais.ingest_census,
     st.sar && st.sar.ingest,
@@ -1207,20 +1121,21 @@ async function loadData() {
 
   renderStats(rawData);
   renderMainChart(rawData);
-  renderCushingChart(rawData);
-  renderUtilChart(rawData);
   renderProductsChart(rawData);
-  await renderYoyChart();
-  await renderRegionalMap();
 
-  const globalResp = await fetch('/api/global?months=24');
-  const globalData = await globalResp.json();
+  // Fetch both STEO and OMR up front; the Global section's stats + supply/demand
+  // chart merge them. Either source may be empty; renderers handle null/undefined.
+  const [globalData, omrBody] = await Promise.all([
+    fetch('/api/global?months=24').then(r => r.json()),
+    fetch('/api/omr').then(r => r.json()),
+  ]);
+  renderGlobalSub(omrBody);
+  renderGlobalStats(globalData, omrBody);
   if (globalData.length > 0) {
-    renderGlobalStats(globalData);
     renderOecdChart(globalData);
-    renderSupplyDemandChart(globalData);
     renderInvChangeChart(globalData);
   }
+  renderBalanceChart(globalData, omrBody);
 
   await renderShipMap();
 
