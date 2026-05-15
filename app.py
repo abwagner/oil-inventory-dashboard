@@ -13,6 +13,7 @@
 #     "structlog>=24.0",
 #     "python-dotenv>=1.0",
 #     "s3fs>=2024.1",
+#     "curl-cffi>=0.7",
 # ]
 # ///
 """

@@ -53,17 +53,33 @@ from typing import Iterable
 
 import requests
 
+# curl_cffi uses curl-impersonate to mimic real browser TLS fingerprints,
+# bypassing iea.org's Cloudflare bot detection that 403s plain requests/
+# httpx/urllib clients. Optional: if not installed (older deploy), we fall
+# back to plain `requests` and auto-discovery silently degrades to
+# "set OMR_PDF_URL manually."
+try:
+    from curl_cffi import requests as _cffi_requests  # type: ignore
+    _HAVE_CURL_CFFI = True
+except ImportError:
+    _cffi_requests = None
+    _HAVE_CURL_CFFI = False
+
 from _env import db_path, load_repo_env
 
 load_repo_env()
 
 log = logging.getLogger("omr")
 
-# Browser UA — iea.org and the blob CDN return 403 to default `requests` UA.
+# Browser UA — used only when curl_cffi is unavailable; curl_cffi sets its
+# own headers as part of its impersonation.
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 )
+# Chrome version to impersonate via curl_cffi. Bump as Cloudflare's
+# fingerprint database evolves; chrome131 is current at the time of writing.
+_IMPERSONATE = "chrome131"
 
 MONTH_NAMES = [
     "january", "february", "march", "april", "may", "june",
@@ -87,9 +103,12 @@ _BLOB_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Filename date prefix, e.g. "-14APR2026_OilMarketReport" -> (14, APR, 2026)
+# Filename date prefix, e.g. "-14APR2026_OilMarketReport" -> (14, APR, 2026).
+# Allow one or more underscores between the date and "OilMarketReport"; IEA
+# varies the suffix across releases (`_Free_version1`, `_publicversion`, none,
+# sometimes a leading double-underscore on the latter).
 _FILENAME_DATE_RE = re.compile(
-    r"-(\d{1,2})([A-Z]{3})(\d{4})_OilMarketReport",
+    r"-(\d{1,2})([A-Z]{3})(\d{4})_+OilMarketReport",
     re.IGNORECASE,
 )
 
@@ -100,6 +119,10 @@ def candidate_report_urls(today: datetime | None = None) -> list[str]:
     IEA publishes the report mid-month; if today is before the release we want
     to still find last month's edition. Walking back through prior months also
     makes the call robust if the most recent month wasn't published free.
+
+    Kept for the iea.org scrape fallback path even though primary discovery
+    is now via DuckDuckGo search — iea.org sits behind Cloudflare's JS
+    challenge and 403s every non-JS client (curl_cffi included).
     """
     today = today or datetime.now(tz=timezone.utc)
     out = []
@@ -115,32 +138,115 @@ def candidate_report_urls(today: datetime | None = None) -> list[str]:
     return out
 
 
-def fetch_html(url: str, timeout: int = 30) -> str | None:
-    """GET an iea.org HTML page with a browser UA. Returns None on 4xx/5xx."""
+def _search_ddg_for_blob_urls(query: str, timeout: int = 15) -> list[str]:
+    """Query DuckDuckGo's HTML interface and extract any iea.blob URLs.
+
+    DuckDuckGo indexes the iea.blob CDN's PDF URLs (the OMR PDFs are public,
+    just gated behind a Cloudflare-protected iea.org HTML page). Their HTML
+    results page wraps each result link as `/l/?uddg=<encoded-url>` —
+    extract + url-decode to recover the real CDN URLs. Free, no API key,
+    handles both the current-month release and historical issues in one
+    response.
+    """
+    from urllib.parse import quote, unquote
+    ddg_url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
     try:
-        resp = requests.get(
-            url, headers={"User-Agent": _UA}, timeout=timeout, allow_redirects=True
-        )
-    except requests.RequestException as e:
-        log.warning("html_fetch_failed url=%s error=%s", url, e)
-        return None
+        # curl_cffi works fine here too; DDG is more permissive than iea.org
+        # but we use the same client to keep the dependency surface small.
+        if _HAVE_CURL_CFFI:
+            resp = _cffi_requests.get(ddg_url, impersonate=_IMPERSONATE,
+                                      timeout=timeout, allow_redirects=True)
+        else:
+            resp = requests.get(ddg_url, headers={"User-Agent": _UA},
+                                timeout=timeout, allow_redirects=True)
+    except Exception as e:
+        log.warning("ddg_fetch_failed query=%r error=%s", query, e)
+        return []
     if resp.status_code != 200:
-        log.info("html_not_200 url=%s status=%d", url, resp.status_code)
+        log.warning("ddg_not_200 query=%r status=%d", query, resp.status_code)
+        return []
+    html = resp.text if hasattr(resp, "text") else resp.content.decode("utf-8", "replace")
+    # DDG result links: /l/?uddg=<percent-encoded-target>&rut=...
+    out: list[str] = []
+    for m in re.finditer(r'uddg=([^&"\'<>]+)', html):
+        decoded = unquote(m.group(1))
+        if "iea.blob.core.windows.net" in decoded and "OilMarketReport" in decoded:
+            # de-dupe while preserving order
+            if decoded not in out:
+                out.append(decoded)
+    return out
+
+
+def fetch_html(url: str, timeout: int = 30) -> str | None:
+    """GET an iea.org HTML page. Returns None on 4xx/5xx.
+
+    Uses curl_cffi with a Chrome TLS fingerprint when available — required
+    to get past Cloudflare's bot check on iea.org. Falls back to `requests`
+    + a browser UA when curl_cffi isn't installed (will likely 403).
+    """
+    if _HAVE_CURL_CFFI:
+        try:
+            resp = _cffi_requests.get(
+                url, impersonate=_IMPERSONATE, timeout=timeout, allow_redirects=True,
+            )
+        except Exception as e:
+            log.warning("html_fetch_failed url=%s mode=curl_cffi error=%s", url, e)
+            return None
+    else:
+        try:
+            resp = requests.get(
+                url, headers={"User-Agent": _UA}, timeout=timeout, allow_redirects=True,
+            )
+        except requests.RequestException as e:
+            log.warning("html_fetch_failed url=%s mode=requests error=%s", url, e)
+            return None
+    if resp.status_code != 200:
+        log.info("html_not_200 url=%s status=%d mode=%s",
+                 url, resp.status_code, "curl_cffi" if _HAVE_CURL_CFFI else "requests")
         return None
     return resp.text
 
 
 def find_latest_pdf_url() -> str | None:
-    """Walk back through monthly report URLs until one yields a PDF link."""
+    """Discover the latest free OMR PDF URL.
+
+    Strategy: query DuckDuckGo for `site:iea.blob.core.windows.net
+    OilMarketReport <year>`, parse iea.blob URLs from the results, and pick
+    the one with the most recent date prefix in its filename. Falls back to
+    scraping iea.org HTML if DDG returns nothing (likely 403s under
+    Cloudflare's JS challenge — but cheap to try).
+    """
+    today = datetime.now(tz=timezone.utc)
+    # Query the current year first, then prior year — covers the late-January
+    # window where the current year has nothing indexed yet.
+    candidates: list[str] = []
+    for year in (today.year, today.year - 1):
+        candidates.extend(_search_ddg_for_blob_urls(
+            f"site:iea.blob.core.windows.net OilMarketReport {year}"
+        ))
+        if candidates:
+            break  # don't query prior year unless current year yielded nothing
+
+    if candidates:
+        # Sort by date prefix in the filename (most recent first), pick top.
+        def _key(u: str) -> tuple:
+            d = report_date_from_url(u)
+            return (d or "0000-00-00",)
+        candidates.sort(key=_key, reverse=True)
+        pick = candidates[0]
+        log.info("found_pdf_url_via_ddg pick=%s candidates=%d", pick, len(candidates))
+        return pick
+
+    # Fallback: iea.org scrape (almost certainly 403s but kept as a path)
+    log.info("ddg_yielded_nothing trying_iea_org_scrape")
     for url in candidate_report_urls():
         html = fetch_html(url)
         if html is None:
             continue
         m = _BLOB_URL_RE.search(html)
         if m:
-            log.info("found_pdf_url page=%s pdf=%s", url, m.group())
+            log.info("found_pdf_url_via_iea_org page=%s pdf=%s", url, m.group())
             return m.group()
-        log.info("no_pdf_link page=%s", url)
     return None
 
 
@@ -150,27 +256,41 @@ def find_latest_pdf_url() -> str | None:
 
 
 def download_pdf(url: str, timeout: int = 60) -> bytes:
-    """Download a PDF with a browser UA. Raises on non-200."""
-    log.info("downloading pdf url=%s", url)
-    resp = requests.get(
-        url, headers={"User-Agent": _UA}, timeout=timeout, allow_redirects=True
-    )
-    resp.raise_for_status()
+    """Download a PDF. Uses curl_cffi when available for Cloudflare-protected
+    paths; falls back to `requests`. Raises on non-200.
+    """
+    log.info("downloading pdf url=%s mode=%s",
+             url, "curl_cffi" if _HAVE_CURL_CFFI else "requests")
+    if _HAVE_CURL_CFFI:
+        resp = _cffi_requests.get(
+            url, impersonate=_IMPERSONATE, timeout=timeout, allow_redirects=True,
+        )
+    else:
+        resp = requests.get(
+            url, headers={"User-Agent": _UA}, timeout=timeout, allow_redirects=True,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"PDF download failed: HTTP {resp.status_code} for {url}")
     return resp.content
 
 
 def pdf_to_text(pdf_bytes: bytes) -> str:
-    """Run `pdftotext -layout` (from poppler-utils) on the PDF bytes.
+    """Run `pdftotext -raw` (from poppler-utils) on the PDF bytes.
 
-    -layout preserves column structure which is critical for our position-based
-    parser. The text is returned as a single string with newline separators.
+    Originally used `-layout` which preserves column geometry — but the May
+    2026 OMR was authored with a different PDF generator that emits Table 1
+    in column-major order when `-layout` is used (header / value / header /
+    value …). `-raw` ignores layout entirely and emits text in reading
+    order, which gives consistent row-major output for both April and May
+    PDF layouts. The downstream parser zips values to columns by index, so
+    column geometry isn't needed.
     """
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(pdf_bytes)
         tmp = f.name
     try:
         out = subprocess.run(
-            ["pdftotext", "-layout", tmp, "-"],
+            ["pdftotext", "-raw", tmp, "-"],
             capture_output=True, check=True, timeout=60,
         )
         return out.stdout.decode("utf-8", errors="replace")
@@ -203,12 +323,28 @@ _SECTIONS = {
     "WORLD OIL PRODUCTION",
 }
 
-# Anchor regexes that mark the start of each table block. We greedily consume
-# data rows after each anchor until the next anchor or a recognised end-marker.
+# Anchor regexes for each table. Each table accepts EITHER the "Table N"
+# title line OR the descriptive subtitle, because the line that appears
+# before the data varies between PDF generators (April 2026's free OMR has
+# only the subtitle preceding the data; May 2026 has both). The patterns
+# are mutually exclusive between tables to avoid false matches:
+#   - Table 1's subtitle ("WORLD OIL SUPPLY AND DEMAND") must end-of-line,
+#     so Table 1a's longer subtitle doesn't get scooped here.
+#   - Table 1a's subtitle is identified by "CHANGES FROM LAST MONTH".
+#   - Table 1b's subtitle is "WORLD OIL PRODUCTION".
 _TABLE_ANCHORS = {
-    "1":  re.compile(r"^\s*Table 1\s*$"),
-    "1a": re.compile(r"^\s*Table 1a\s*$"),
-    "1b": re.compile(r"^\s*Table 1b"),
+    "1":  re.compile(
+        r"^\s*(?:Table 1\b(?![ab])|WORLD OIL SUPPLY AND DEMAND\s*$)",
+        re.IGNORECASE,
+    ),
+    "1a": re.compile(
+        r"^\s*(?:Table 1a\b|.*CHANGES FROM LAST MONTH)",
+        re.IGNORECASE,
+    ),
+    "1b": re.compile(
+        r"^\s*(?:Table 1b\b|WORLD OIL PRODUCTION)",
+        re.IGNORECASE,
+    ),
 }
 
 # End-of-table markers (footnote anchors, descriptive prose, next-page header).
@@ -271,26 +407,48 @@ def clean_row_label(label: str) -> str:
     return label.strip()
 
 
-def label_and_remainder(line: str, first_value_col: int) -> tuple[str, str]:
-    """Split `line` into (row_label, value_region) at `first_value_col`.
+def label_and_remainder(line: str, first_value_col: int = 0) -> tuple[str, str]:
+    """Split `line` into (row_label, value_region).
 
-    Footnote-marker digits sitting at the end of row labels would otherwise
-    get scooped by the value-parsing regex. Keeping them in the label half
-    lets clean_row_label() drop them safely.
+    Strategy: find the first decimal-value token (`\\d+\\.\\d+`) and split
+    there. Everything before is the label, everything from the token onward
+    is the value region. Works for both `pdftotext -layout` (label and
+    values are widely spaced) and `pdftotext -raw` (label and values are
+    single-space separated). Footnote-marker digits attached to row labels
+    are integers, not decimals, so they stay in the label and get cleaned
+    by `clean_row_label`.
+
+    `first_value_col` is no longer used (kept for backward compat with
+    existing call sites); pass anything.
     """
-    cut = max(0, first_value_col - 6)
-    return line[:cut].rstrip(), line[cut:]
+    m = _VALUE_RE.search(line)
+    if m:
+        return line[:m.start()].rstrip(), line[m.start():]
+    return line.rstrip(), ""
 
 
-def looks_like_section(line: str, first_value_col: int) -> bool:
+def looks_like_section(line: str, first_value_col: int = 0) -> bool:
     """A section header has letters in the label region but NO numeric values
     in the value region."""
-    label, rest = label_and_remainder(line, first_value_col)
+    label, rest = label_and_remainder(line)
     if not label:
         return False
     if _VALUE_RE.search(rest):
         return False
     return any(ch.isalpha() for ch in label)
+
+
+def _is_real_anchor(lines: list[str], idx: int, max_lookahead: int = 10) -> bool:
+    """An anchor is 'real' if a period-header row (>=3 period tokens) appears
+    within the next `max_lookahead` lines. Filters out incidental "Table 1"
+    matches inside other tables' multi-line titles or in page footers.
+    """
+    n = len(lines)
+    upper = min(idx + 1 + max_lookahead, n)
+    for j in range(idx + 1, upper):
+        if len(parse_periods_from_header(lines[j])) >= 3:
+            return True
+    return False
 
 
 def parse_one_table(
@@ -333,8 +491,14 @@ def parse_one_table(
         # Stop at end-of-table markers (footnotes etc.)
         if _END_OF_TABLE.match(line):
             break
-        # Stop at the start of the next table
-        if any(anchor.match(line) for anchor in _TABLE_ANCHORS.values()):
+        # Stop at the start of the next table — but only if it's a *real*
+        # anchor (period header follows within 10 lines). Without this check
+        # we'd break on "Table 1" / "Table 1a" / "Table 1b" sub-strings that
+        # appear inside other tables' titles or footers.
+        if (
+            any(anchor.match(line) for anchor in _TABLE_ANCHORS.values())
+            and _is_real_anchor(lines, i)
+        ):
             break
 
         label, rest = label_and_remainder(line, first_value_col)
@@ -379,34 +543,82 @@ def parse_one_table(
     return records, i
 
 
+# Heuristic for "this line has only numeric tokens / whitespace / signs" —
+# used to recognise a values-only row split off from its label.
+_VALUES_ONLY_LINE_RE = re.compile(r"^[\s\d.\-]+$")
+
+
+def _preprocess_raw_text(text: str) -> str:
+    """Merge label-only lines with the next values-only line.
+
+    `pdftotext -raw` separates footnote-superscripted row labels from their
+    values onto adjacent lines (e.g. "Americas1\\n25.7 26.4 …"). Rejoin so
+    the rest of the parser sees one row per record.
+
+    Heuristic: the candidate label line has letters but no decimal value;
+    the next line consists of only digits/decimals/signs/whitespace AND has
+    at least one decimal value. Section-header lines like "NON-OECD SUPPLY"
+    are usually followed by another label line (e.g. "Eurasia"), which has
+    letters and therefore fails the values-only check — left untouched.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        if (
+            line.strip()
+            and not _VALUE_RE.search(line)
+            and any(c.isalpha() for c in line)
+            and next_line.strip()
+            and _VALUES_ONLY_LINE_RE.match(next_line)
+            and _VALUE_RE.search(next_line)
+        ):
+            out.append(line.rstrip() + " " + next_line.lstrip())
+            i += 2
+        else:
+            out.append(line)
+            i += 1
+    return "\n".join(out)
+
+
 def parse_tables(text: str) -> list[dict]:
     """Parse Tables 1, 1a, 1b from the OMR PDF text.
 
-    Returns a flat list of records ready to upsert into omr_monthly.
+    Each table is parsed AT MOST ONCE, even if its anchor string recurs
+    (e.g. "Table 1" appears inside Table 1a's multi-line title and in page
+    footers). An anchor is only committed when a period-header row exists
+    within 10 lines after it.
     """
+    text = _preprocess_raw_text(text)
     lines = text.splitlines()
     n = len(lines)
     out: list[dict] = []
     i = 0
-    seen: set[str] = set()  # parse each table once even if anchor recurs
+    seen: set[str] = set()
     while i < n:
         line = lines[i]
         matched_table = None
         for tid, anchor in _TABLE_ANCHORS.items():
             if tid in seen:
                 continue
-            if anchor.match(line):
+            if anchor.match(line) and _is_real_anchor(lines, i):
                 matched_table = tid
                 break
         if matched_table is None:
             i += 1
             continue
         records, next_i = parse_one_table(lines, i, matched_table)
+        # Mark seen regardless of records — even a failed parse shouldn't get
+        # re-attempted on the same anchor line.
+        seen.add(matched_table)
         if records:
-            seen.add(matched_table)
             out.extend(records)
             log.info("parsed_table id=%s rows=%d", matched_table, len(records))
-        i = next_i
+        else:
+            log.warning("parsed_table_empty id=%s anchor=%d", matched_table, i)
+        i = max(next_i, i + 1)
     return out
 
 
