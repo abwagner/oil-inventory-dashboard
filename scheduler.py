@@ -71,6 +71,19 @@ AOIS = [
         "bbox":   (-98.0, 26.0, -88.0, 31.0),
         "size":   (8000, 4000),
     },
+    # Singapore Strait + Malacca Strait — chokepoint for TD3C (MEG → China)
+    # and TD22 (USGC → China) routes, plus Singapore's Eastern + Western OPL
+    # anchorages which historically dominate Asian floating storage. Bbox
+    # covers Malacca's narrow eastern section (~Port Klang southward) through
+    # the Singapore Strait and into the South China Sea entrance. ~120 m/px
+    # to match the existing AOIs' effective resolution (the higher cos(lat)
+    # factor near the equator makes this ~3700 px for 4° lon vs. Persian
+    # Gulf's 5000 px for 6° lon at lat 26°).
+    {
+        "name":   "singapore_malacca",
+        "bbox":   (102.0, 0.5, 106.0, 4.0),
+        "size":   (3700, 3250),
+    },
 ]
 
 

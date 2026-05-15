@@ -72,13 +72,13 @@ the exception** and it's important to understand the model before enabling it:
 
 - **Sentinel Hub** (under CDSE) charges in *Processing Units* (PUs). The free
   tier ships ~30k PU/month.
-- The default AOIs (Persian Gulf / Strait of Hormuz, US Gulf Coast) at
-  ~88 m/px run **~4–8k PU per acquisition** when fully tiled. With ~20
-  acquisitions/AOI/month from the S1A+S1C+S1D constellation, you'll see
-  ~8–10k PU/month for two AOIs.
+- The configured AOIs (Persian Gulf / Strait of Hormuz, US Gulf Coast,
+  Singapore Strait + Malacca) at ~120 m/px run **~4–8k PU per acquisition**
+  when fully tiled. With ~20 acquisitions/AOI/month from the S1A+S1C+S1D
+  constellation, you'll see ~12–18k PU/month across the three AOIs.
 - Each additional AOI roughly proportionally adds to the bill. Adding West
-  Africa + Brazil + Malacca on top of the defaults can push past the free
-  tier in two weeks. See `docs/WTI_Tanker_Forecast_TDD.md` §4.2.2.1 for the
+  Africa + Brazil on top of the current set can push past the free tier in
+  a few weeks. See `docs/WTI_Tanker_Forecast_TDD.md` §4.2.2.1 for the
   detailed empirical PU model.
 - **Over-quota behavior**: the order endpoint returns HTTP 403 and tile
   responses become watermarked. Your subscription is suspended until top-up
