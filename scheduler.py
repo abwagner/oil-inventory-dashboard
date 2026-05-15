@@ -84,6 +84,27 @@ AOIS = [
         "bbox":   (102.0, 0.5, 106.0, 4.0),
         "size":   (3700, 3250),
     },
+    # Red Sea + Bab el-Mandeb — Suez bypass chokepoint and the current
+    # Houthi attack zone. Bbox covers Bab el-Mandeb (Yemen / Djibouti) and
+    # ~5° north into the Red Sea where most attacks have occurred. Real-time
+    # signal: re-routings around the Cape of Good Hope show up as a sudden
+    # transient-traffic drop here. Small AOI, ~3-4k PU/month.
+    {
+        "name":   "red_sea_bab_mandeb",
+        "bbox":   (42.0, 11.0, 46.0, 16.0),
+        "size":   (3600, 4600),
+    },
+    # Yellow Sea + Bohai Bay — primary Chinese crude unloading region.
+    # Bohai (Tianjin / Dalian) is where Russia's ESPO crude lands; Qingdao
+    # in the Yellow Sea is where MEG crude lands. Anchorage queues here are
+    # the most direct Chinese demand signal. ~7°×7° at lat 37°N → ~5200×6500
+    # px at ~120 m/px ≈ ~8-9k PU/month. Doesn't include Ningbo-Zhoushan
+    # (~30°N) — that's a separate AOI worth adding if PU budget allows.
+    {
+        "name":   "yellow_sea_bohai",
+        "bbox":   (118.0, 34.0, 125.0, 41.0),
+        "size":   (5200, 6500),
+    },
 ]
 
 
