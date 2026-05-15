@@ -296,9 +296,10 @@
     <div class="chart-header">
       <div class="chart-title">World supply vs demand (quarterly)</div>
       <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--green)"></span>Supply</span>
-        <span><span class="legend-dash" style="border-color:var(--amber)"></span>Demand</span>
-        <span style="color:var(--text3)">IEA OMR primary · EIA STEO quarterly-avg fills any gaps</span>
+        <span><span class="legend-line" style="background:#10b981"></span>IEA Supply</span>
+        <span><span class="legend-dash" style="border-color:#f59e0b"></span>IEA Demand</span>
+        <span><span class="legend-line" style="background:rgba(16,185,129,0.5)"></span>EIA Supply</span>
+        <span><span class="legend-dash" style="border-color:rgba(245,158,11,0.5)"></span>EIA Demand</span>
       </div>
     </div>
     <div class="chart-wrap"><canvas id="balanceChart"></canvas></div>
@@ -939,11 +940,13 @@ function renderOecdChart(data) {
   });
 }
 
-// Combined supply/demand chart. OMR primary (uses Table 1b which extends
-// supply through 4Q26 by assuming the OPEC+ current-agreement); STEO monthly
-// resampled to quarterly fills any quarter OMR doesn't cover — most
-// importantly, when OMR hasn't been ingested yet the chart still renders
-// STEO history instead of going blank.
+// Combined supply/demand chart with both sources plotted side by side.
+// IEA OMR is bolder (heavier line, full opacity); EIA STEO is the same
+// supply/demand color but at reduced opacity + thinner line, so the
+// supply-vs-demand visual remains primary and source-comparison is
+// secondary. Agencies disagree most during stressed periods (e.g.
+// STEO models near-term disruption more aggressively than OMR Table 1b)
+// — showing both lets the operator see the spread.
 function renderBalanceChart(steoData, omrBody) {
   destroyChart('balance');
   const omrSup = {}, omrDem = {};
@@ -958,20 +961,28 @@ function renderBalanceChart(steoData, omrBody) {
     ...Object.keys(omrSup), ...Object.keys(omrDem), ...Object.keys(steoQ),
   ]);
   const labels = [...allKeys].sort((a, b) => _periodSortKey(a) - _periodSortKey(b));
-  const supply = labels.map(k => omrSup[k] ?? steoQ[k]?.supply ?? null);
-  const demand = labels.map(k => omrDem[k] ?? steoQ[k]?.demand ?? null);
+  const omrSupply = labels.map(k => omrSup[k] ?? null);
+  const omrDemand = labels.map(k => omrDem[k] ?? null);
+  const steoSupply = labels.map(k => steoQ[k]?.supply ?? null);
+  const steoDemand = labels.map(k => steoQ[k]?.demand ?? null);
 
   charts.balance = new Chart(document.getElementById('balanceChart'), {
     type: 'line',
     data: {
       labels,
       datasets: [
-        { label: 'Supply (Mbpd)', data: supply,
+        { label: 'IEA Supply (Mbpd)', data: omrSupply,
           borderColor: '#10b981', backgroundColor: '#10b981',
-          borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
-        { label: 'Demand (Mbpd)', data: demand,
+          borderWidth: 2.5, pointRadius: 2.5, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
+        { label: 'IEA Demand (Mbpd)', data: omrDemand,
           borderColor: '#f59e0b', backgroundColor: '#f59e0b',
-          borderWidth: 2, borderDash: [6, 3], pointRadius: 2, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
+          borderWidth: 2.5, borderDash: [6, 3], pointRadius: 2.5, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
+        { label: 'EIA Supply (Mbpd)', data: steoSupply,
+          borderColor: 'rgba(16,185,129,0.5)', backgroundColor: 'rgba(16,185,129,0.5)',
+          borderWidth: 1.5, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.2, spanGaps: false },
+        { label: 'EIA Demand (Mbpd)', data: steoDemand,
+          borderColor: 'rgba(245,158,11,0.5)', backgroundColor: 'rgba(245,158,11,0.5)',
+          borderWidth: 1.5, borderDash: [3, 3], pointRadius: 1.5, pointHoverRadius: 4, tension: 0.2, spanGaps: false },
       ]
     },
     options: {
