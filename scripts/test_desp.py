@@ -161,10 +161,12 @@ def partial_download(token: str, product_id: str, n_bytes: int = 1_048_576) -> d
     }
 
 
-def get_token_password(username: str, password: str) -> str:
-    """Resource Owner Password Credentials grant — required for downloads
-    when the client_credentials token isn't accepted by the download endpoint.
-    Uses the public 'cdse-public' client (no client_secret required)."""
+def get_token_password(username: str, password: str) -> dict:
+    """Resource Owner Password Credentials grant via cdse-public.
+
+    Returns the full token response dict so callers can capture the
+    `refresh_token` for long-lived storage (avoids needing to keep the
+    password in .env after the first auth)."""
     r = requests.post(
         TOKEN_URL,
         data={
@@ -176,7 +178,24 @@ def get_token_password(username: str, password: str) -> str:
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["access_token"]
+    return r.json()
+
+
+def get_token_refresh(refresh_token: str) -> dict:
+    """Refresh-token grant via cdse-public. Use this for subsequent auths
+    after a one-time password grant — the refresh token can sit in .env
+    and is easier to revoke than a password."""
+    r = requests.post(
+        TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "client_id": "cdse-public",
+            "refresh_token": refresh_token,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
 
 
 # ─── Main ────────────────────────────────────────────────────────────────
@@ -197,31 +216,58 @@ def main() -> int:
     print(f"Lookback: {LOOKBACK_DAYS} days")
     print()
 
-    # Step 0.1 — auth. Try password grant first if CDSE_USERNAME/PASSWORD
-    # are available (works for both catalog AND download); otherwise fall
-    # back to client_credentials (catalog only — downloads will 401).
+    # Step 0.1 — auth. Three modes, in order of preference:
+    #   (1) refresh-token grant via cdse-public  — needs CDSE_REFRESH_TOKEN
+    #       in env, lowest-trust path (refresh tokens are easy to revoke).
+    #   (2) password grant via cdse-public       — needs CDSE_USERNAME +
+    #       CDSE_PASSWORD; emits a refresh_token you can save to .env to
+    #       drop the password afterwards.
+    #   (3) client_credentials via existing sh-* client — catalog only;
+    #       downloads will 401 with "Token audience not allowed".
+    refresh_token = os.environ.get("CDSE_REFRESH_TOKEN")
     username = os.environ.get("CDSE_USERNAME")
     password = os.environ.get("CDSE_PASSWORD")
-    if username and password:
+    auth_mode = None
+    new_refresh: str | None = None
+    if refresh_token:
+        print("[1] Authenticating with CDSE OAuth (refresh_token grant via cdse-public)…")
+        try:
+            t = get_token_refresh(refresh_token)
+            token = t["access_token"]
+            new_refresh = t.get("refresh_token")
+            auth_mode = "refresh_token"
+        except requests.HTTPError as e:
+            print(f"  FAIL  refresh grant: HTTP {e.response.status_code}: {e.response.text[:200]}")
+            return 1
+        print(f"  OK    token acquired via refresh_token (len={len(token)})")
+        if new_refresh and new_refresh != refresh_token:
+            print("  NOTE  refresh token rotated — update CDSE_REFRESH_TOKEN in .env if you "
+                  "want to keep using the new one for subsequent runs.")
+    elif username and password:
         print("[1] Authenticating with CDSE OAuth (password grant via cdse-public)…")
         try:
-            token = get_token_password(username, password)
+            t = get_token_password(username, password)
+            token = t["access_token"]
+            new_refresh = t.get("refresh_token")
             auth_mode = "password"
         except requests.HTTPError as e:
-            print(f"  FAIL  password grant: HTTP {e.response.status_code}")
-            print(f"        body: {e.response.text[:300]}")
+            print(f"  FAIL  password grant: HTTP {e.response.status_code}: {e.response.text[:200]}")
             return 1
         print(f"  OK    token acquired via password grant (len={len(token)})")
+        if new_refresh:
+            print(f"  NOTE  refresh_token returned (len={len(new_refresh)}). To switch to refresh-token "
+                  "auth (and drop CDSE_PASSWORD from .env), save this value as CDSE_REFRESH_TOKEN.")
+            print(f"        CDSE_REFRESH_TOKEN={new_refresh}")
     else:
         print("[1] Authenticating with CDSE OAuth (client_credentials)…")
-        print("    NOTE: no CDSE_USERNAME/PASSWORD in env — downloads may 401")
-        print("          (DESP requires user identity for download).")
+        print("    NOTE: no CDSE_REFRESH_TOKEN / CDSE_USERNAME+PASSWORD in env — downloads")
+        print("          will 401. Set CDSE_USERNAME + CDSE_PASSWORD once, then save the")
+        print("          emitted refresh_token as CDSE_REFRESH_TOKEN going forward.")
         try:
             token = get_token()
             auth_mode = "client_credentials"
         except requests.HTTPError as e:
-            print(f"  FAIL  auth: HTTP {e.response.status_code}")
-            print(f"        body: {e.response.text[:300]}")
+            print(f"  FAIL  auth: HTTP {e.response.status_code}: {e.response.text[:300]}")
             return 1
         except Exception as e:
             print(f"  FAIL  auth: {type(e).__name__}: {e}")

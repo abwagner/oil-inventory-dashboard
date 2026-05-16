@@ -213,25 +213,49 @@ catalog endpoints accept any valid Bearer token; download endpoints check
 the token's `aud` claim and reject tokens not minted for the download
 audience.
 
-**Two paths to fix** (the script supports either):
+**Inspection of the existing token's claims** (`scripts/test_desp.py`
+scope probe, also tried with various scopes):
 
-1. **Add CDSE_USERNAME + CDSE_PASSWORD to `.env`.** The script's
-   `get_token_password()` function uses Resource Owner Password
-   Credentials grant via the public `cdse-public` client — these tokens
-   have the correct audience for downloads. Lowest-friction path; trade-off
-   is that a long-lived password sits in `.env`.
+```
+azp=sh-a893db22-daa4-4e14-8ac9-966ba13e2ddb
+aud=None
+scope=email profile user-context
+```
 
-2. **Register a new OAuth client at the CDSE identity portal directly**
-   (`https://identity.dataspace.copernicus.eu/auth/realms/CDSE/account/clients`).
-   Different from the Sentinel Hub OAuth client. The token's audience
-   should include `download` if registered correctly. No password storage
-   needed.
+The `sh-` prefix on `azp` confirms the client was registered through
+Sentinel Hub's dashboard, which mints tokens with no `aud` claim. The
+download endpoint specifically requires a download-audience token. Scope
+tweaks won't fix this — the client itself is the wrong shape.
 
-**Decision required before Step 1**: which auth approach to commit to.
-Option 1 ships fastest; Option 2 has better long-term security
-properties. Either way, the catalog + product-metadata path is fully
-unblocked — sized planning for Step 1 (S1 GRD ingest) and Step 2 (S2
-optical) can proceed in parallel with the auth-mode decision.
+**Initial speculation that "register a CDSE-native OAuth client" would
+fix this turned out to be wrong.** CDSE doesn't expose self-service
+OAuth-client registration outside Sentinel Hub's dashboard (which only
+creates the same `sh-` clients). The CDSE account portal at
+identity.dataspace.copernicus.eu/auth/realms/CDSE/account/ only manages
+*consents* for existing apps; there's no "Create client" UI.
+
+**The actually-documented path for programmatic downloads is Resource
+Owner Password Credentials grant via the public `cdse-public` client.**
+See https://documentation.dataspace.copernicus.eu/APIs/Token.html.
+
+To minimize the long-lived-password concern, the script supports three
+auth modes in priority order:
+
+1. **Refresh-token grant** (`CDSE_REFRESH_TOKEN` in .env) — preferred for
+   long-running deployments. Refresh tokens are easier to revoke than a
+   password and don't need re-issue on a schedule (CDSE refresh tokens
+   are long-lived). Get one via path 2 below, then store it.
+2. **Password grant** (`CDSE_USERNAME` + `CDSE_PASSWORD` in .env) —
+   one-time use to bootstrap a refresh token, then drop the password and
+   only keep the refresh token. The script prints the new refresh_token
+   on every password-grant call so capturing it is trivial.
+3. **Client_credentials** (existing `sh-*` client) — fallback for
+   catalog-only operations. Won't work for downloads.
+
+**Decision required before Step 1**: do a one-time password-grant auth
+to mint a refresh token, then operate on the refresh token going forward.
+Username + initial password get used once; the refresh token rotates
+out of the way of the password.
 
 **Observed scene sizes inform Step 3 budget**:
 - S1 IW GRD: ~1 GB/scene (range: 850 MB – 1.7 GB)
