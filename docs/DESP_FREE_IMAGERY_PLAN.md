@@ -189,6 +189,54 @@ Pure enhancement layer; nothing depends on it.
   but raw GRD products before processing need to be deleted or
   archived to MinIO.
 
-## Step 0 results
+## Step 0 results (2026-05-16)
 
-_(Filled in after running the test.)_
+**Auth + catalog: ✅ pass.** `client_credentials` token using the existing
+`CDSE_CLIENT_ID` + `CDSE_CLIENT_SECRET` worked for both:
+- Sentinel-1 IW GRD search: 5 products returned for Persian Gulf in last
+  14 days, sizes 850 MB – 1.7 GB each (GRDH SDV polarisation, both
+  `_COG.SAFE` and standard `.SAFE` formats present).
+- Sentinel-2 L2A search (with `cloud_cover < 30%`): 5 products returned,
+  sizes 860 MB – 1.2 GB each. Multiple tiles covering the AOI from the
+  same orbit pass.
+
+**Download: ❌ blocked on token audience.** HTTP 401 from
+`download.dataspace.copernicus.eu` with body:
+```json
+{"code":"DAT-ZIP-609","message":"Token audience not allowed"}
+```
+
+Root cause: the client_credentials token issued via the user's existing
+OAuth client (created through Sentinel Hub's dashboard) lacks the audience
+claim required by the download endpoint. CDSE documents this pattern:
+catalog endpoints accept any valid Bearer token; download endpoints check
+the token's `aud` claim and reject tokens not minted for the download
+audience.
+
+**Two paths to fix** (the script supports either):
+
+1. **Add CDSE_USERNAME + CDSE_PASSWORD to `.env`.** The script's
+   `get_token_password()` function uses Resource Owner Password
+   Credentials grant via the public `cdse-public` client — these tokens
+   have the correct audience for downloads. Lowest-friction path; trade-off
+   is that a long-lived password sits in `.env`.
+
+2. **Register a new OAuth client at the CDSE identity portal directly**
+   (`https://identity.dataspace.copernicus.eu/auth/realms/CDSE/account/clients`).
+   Different from the Sentinel Hub OAuth client. The token's audience
+   should include `download` if registered correctly. No password storage
+   needed.
+
+**Decision required before Step 1**: which auth approach to commit to.
+Option 1 ships fastest; Option 2 has better long-term security
+properties. Either way, the catalog + product-metadata path is fully
+unblocked — sized planning for Step 1 (S1 GRD ingest) and Step 2 (S2
+optical) can proceed in parallel with the auth-mode decision.
+
+**Observed scene sizes inform Step 3 budget**:
+- S1 IW GRD: ~1 GB/scene (range: 850 MB – 1.7 GB)
+- S2 L2A: ~1 GB/scene (range: 860 MB – 1.2 GB)
+- For 5 AOIs × 20 scenes/AOI/month × 6 months backfill ≈ 600 scenes ×
+  ~1 GB = ~600 GB raw per source. Roughly half what the doc's earlier
+  "2-5 TB" handwave suggested. Still significant but well within a single
+  bulk-storage drive.

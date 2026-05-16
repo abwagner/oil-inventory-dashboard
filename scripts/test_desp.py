@@ -111,34 +111,72 @@ def search_products(
 
 
 def partial_download(token: str, product_id: str, n_bytes: int = 1_048_576) -> dict:
-    """HTTP Range request for the first `n_bytes` of the product. Returns
-    {status, content_length, content_type, sample_bytes} — no disk write."""
+    """HTTP Range request for the first `n_bytes` of the product.
+
+    DESP's download endpoint (`download.dataspace.copernicus.eu`) may
+    redirect to `zipper.dataspace.copernicus.eu`; we follow redirects
+    manually and re-attach Authorization each hop (requests strips it
+    on cross-origin redirects).
+    """
     url = DOWNLOAD_URL_TPL.format(id=product_id)
-    r = requests.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Range": f"bytes=0-{n_bytes - 1}",
-        },
-        timeout=120,
-        stream=True,
-        allow_redirects=True,
-    )
-    # We don't .raise_for_status() — 206 is the expected case
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Range": f"bytes=0-{n_bytes - 1}",
+    }
+    redirects = 0
+    while redirects < 5:
+        r = requests.get(url, headers=headers, timeout=120,
+                         stream=True, allow_redirects=False)
+        if r.status_code in (301, 302, 303, 307, 308):
+            new_url = r.headers.get("Location")
+            if not new_url:
+                break
+            url = new_url
+            redirects += 1
+            continue
+        break
+
     content = b""
+    err_body: str | None = None
     if r.status_code in (200, 206):
-        # Pull exactly the bytes requested
         for chunk in r.iter_content(chunk_size=65536):
             content += chunk
             if len(content) >= n_bytes:
                 break
+    elif r.status_code >= 400:
+        try:
+            err_body = r.text[:400]
+        except Exception:
+            err_body = "(non-text body)"
     return {
         "status": r.status_code,
         "content_length": int(r.headers.get("Content-Length", -1)),
         "content_type": r.headers.get("Content-Type"),
         "downloaded_bytes": len(content),
         "first_4_bytes_hex": content[:4].hex() if content else None,
+        "redirects_followed": redirects,
+        "final_url_host": url.split("/")[2] if "://" in url else None,
+        "err_body": err_body,
+        "www_authenticate": r.headers.get("WWW-Authenticate"),
     }
+
+
+def get_token_password(username: str, password: str) -> str:
+    """Resource Owner Password Credentials grant — required for downloads
+    when the client_credentials token isn't accepted by the download endpoint.
+    Uses the public 'cdse-public' client (no client_secret required)."""
+    r = requests.post(
+        TOKEN_URL,
+        data={
+            "grant_type": "password",
+            "client_id": "cdse-public",
+            "username": username,
+            "password": password,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["access_token"]
 
 
 # ─── Main ────────────────────────────────────────────────────────────────
@@ -159,18 +197,36 @@ def main() -> int:
     print(f"Lookback: {LOOKBACK_DAYS} days")
     print()
 
-    # Step 0.1 — auth
-    print("[1] Authenticating with CDSE OAuth (client_credentials)…")
-    try:
-        token = get_token()
-    except requests.HTTPError as e:
-        print(f"  FAIL  auth: HTTP {e.response.status_code}")
-        print(f"        body: {e.response.text[:300]}")
-        return 1
-    except Exception as e:
-        print(f"  FAIL  auth: {type(e).__name__}: {e}")
-        return 1
-    print(f"  OK    token acquired (len={len(token)})")
+    # Step 0.1 — auth. Try password grant first if CDSE_USERNAME/PASSWORD
+    # are available (works for both catalog AND download); otherwise fall
+    # back to client_credentials (catalog only — downloads will 401).
+    username = os.environ.get("CDSE_USERNAME")
+    password = os.environ.get("CDSE_PASSWORD")
+    if username and password:
+        print("[1] Authenticating with CDSE OAuth (password grant via cdse-public)…")
+        try:
+            token = get_token_password(username, password)
+            auth_mode = "password"
+        except requests.HTTPError as e:
+            print(f"  FAIL  password grant: HTTP {e.response.status_code}")
+            print(f"        body: {e.response.text[:300]}")
+            return 1
+        print(f"  OK    token acquired via password grant (len={len(token)})")
+    else:
+        print("[1] Authenticating with CDSE OAuth (client_credentials)…")
+        print("    NOTE: no CDSE_USERNAME/PASSWORD in env — downloads may 401")
+        print("          (DESP requires user identity for download).")
+        try:
+            token = get_token()
+            auth_mode = "client_credentials"
+        except requests.HTTPError as e:
+            print(f"  FAIL  auth: HTTP {e.response.status_code}")
+            print(f"        body: {e.response.text[:300]}")
+            return 1
+        except Exception as e:
+            print(f"  FAIL  auth: {type(e).__name__}: {e}")
+            return 1
+        print(f"  OK    token acquired via client_credentials (len={len(token)})")
     print()
 
     overall_ok = True
@@ -222,9 +278,13 @@ def main() -> int:
             continue
 
         if dl["status"] in (200, 206) and dl["downloaded_bytes"] >= 1_000_000:
-            print(f"  OK    HTTP {dl['status']}, got {fmt_size(dl['downloaded_bytes'])} (Content-Length={fmt_size(dl['content_length'])}, Content-Type={dl['content_type']}, magic={dl['first_4_bytes_hex']})")
+            print(f"  OK    HTTP {dl['status']}, got {fmt_size(dl['downloaded_bytes'])} (Content-Length={fmt_size(dl['content_length'])}, Content-Type={dl['content_type']}, magic={dl['first_4_bytes_hex']}, redirects={dl['redirects_followed']}, host={dl['final_url_host']})")
         else:
-            print(f"  FAIL  HTTP {dl['status']}, downloaded {fmt_size(dl['downloaded_bytes'])}")
+            print(f"  FAIL  HTTP {dl['status']}, downloaded {fmt_size(dl['downloaded_bytes'])}  (redirects={dl['redirects_followed']}, host={dl['final_url_host']})")
+            if dl.get("www_authenticate"):
+                print(f"        WWW-Authenticate: {dl['www_authenticate']}")
+            if dl.get("err_body"):
+                print(f"        body: {dl['err_body']}")
             overall_ok = False
         print()
 
