@@ -161,6 +161,58 @@ def run_omr_ingest():
                     e.returncode)
 
 
+# --- Job: Sentinel-1 GRD ingest via DESP (daily, free of PUs) -------------
+
+def run_s1_grd_ingest():
+    """Daily Sentinel-1 GRD ingest via DESP raw products (free).
+
+    Parallel path to run_sar_ingest (which uses Sentinel Hub Process API
+    and bills PUs). Same downstream pipeline: after ingest, sar_detect.py
+    + sar_aggregate.py run against the new tiles. Output dir is separate
+    (`sentinel_s1_grd/<aoi>/...`) so the two paths can be A/B-compared.
+    Daily cadence is comfortable since DESP is free; the existing weekly
+    SH cron stays as backup until A/B parity is confirmed (OID-7
+    acceptance, then OID-9 backfill).
+    """
+    output_dir = DATA_DIR / "sentinel_s1_grd"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    until = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = (datetime.now(tz=timezone.utc) - timedelta(days=3)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+    for aoi in AOIS:
+        name = aoi["name"]
+        bbox = aoi["bbox"]
+        width, height = aoi["size"]
+        log.info("s1_grd_ingest aoi=%s bbox=%s size=%dx%d", name, bbox, width, height)
+
+        ingest_cmd = [
+            PYTHON, str(PIPELINES / "sentinel_s1_grd.py"),
+            "--aoi-name", name,
+            "--bbox", *(str(x) for x in bbox),
+            "--width", str(width), "--height", str(height),
+            "--from", since, "--to", until,
+            "--output-dir", str(output_dir),
+        ]
+        try:
+            subprocess.run(ingest_cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            log.error("s1_grd_ingest %s failed (exit %s); skipping detect/aggregate",
+                      name, e.returncode)
+            continue
+
+        scene_dir = output_dir / name
+        try:
+            subprocess.run([PYTHON, str(PIPELINES / "sar_detect.py"),
+                            "--scene-dir", str(scene_dir)], check=True)
+            subprocess.run([PYTHON, str(PIPELINES / "sar_aggregate.py"),
+                            "--scene-dir", str(scene_dir)], check=True)
+        except subprocess.CalledProcessError as e:
+            log.error("s1_grd_ingest %s detect/aggregate failed (exit %s)",
+                      name, e.returncode)
+
+
 # --- Job: SAR ingest + detect + aggregate ---------------------------------
 
 def run_sar_ingest():
@@ -240,6 +292,16 @@ def main():
     # for the free release. Pipeline degrades cleanly when IEA hasn't published.
     scheduler.add_job(run_omr_ingest, "cron", day=14, hour=18, minute=0,
                       id="omr_ingest", max_instances=1, coalesce=True)
+
+    # Sentinel-1 GRD via DESP: daily at 05:00 UTC. Free of PUs, so we can
+    # afford daily cadence vs the weekly Sentinel Hub job. Needs
+    # CDSE_USERNAME + CDSE_PASSWORD in env (separate from Sentinel Hub's
+    # CLIENT_ID/SECRET); skipped if either is missing.
+    if os.environ.get("CDSE_USERNAME") and os.environ.get("CDSE_PASSWORD"):
+        scheduler.add_job(run_s1_grd_ingest, "cron", hour=5, minute=0,
+                          id="s1_grd_ingest", max_instances=1, coalesce=True)
+    else:
+        log.warning("CDSE_USERNAME/PASSWORD missing — skipping S1 GRD daily schedule")
 
     if sar:
         # SAR ingest: weekly, Sunday 06:00 UTC. Costs Sentinel Hub PUs —
