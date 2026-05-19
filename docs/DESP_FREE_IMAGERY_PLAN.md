@@ -286,8 +286,27 @@ Practical options:
   lifetimes under that scope. If yes, drop the password and store only
   the long-lived refresh token. If no, keep the password.
 
-Either way: Step 0 is done. Step 1 (S1 GRD ingest pipeline) is now
-unblocked.
+### Step 0 final result (2026-05-19): use password grant per invocation
+
+The offline-scope probe confirmed CDSE allows `scope=openid
+offline_access`, returning a `typ=Offline` refresh token with **no `exp`
+claim** (effectively never expires). So a long-lived refresh-token-only
+storage is technically available.
+
+**Decision: keep `CDSE_USERNAME` + `CDSE_PASSWORD` in `.env` and
+password-grant on each pipeline run.** Reasoning:
+
+- Token expiry is a non-issue if we have credentials to mint a fresh
+  token on demand. Each pipeline invocation auths once at startup,
+  gets a 10-min access token, and uses it for the duration of the
+  run (S1 ingest is minutes, well within the access-token lifetime).
+- Stateless: no token rotation logic, no `.env` field that has to be
+  swapped out periodically, no "what if the refresh token leaks"
+  worry beyond the password itself.
+- The offline-access path adds management complexity for marginal
+  security gain on a single-user server.
+
+Step 0 is done. Step 1 (S1 GRD ingest pipeline) is now unblocked.
 
 **Observed scene sizes inform Step 3 budget**:
 - S1 IW GRD: ~1 GB/scene (range: 850 MB – 1.7 GB)
