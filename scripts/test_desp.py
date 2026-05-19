@@ -161,22 +161,25 @@ def partial_download(token: str, product_id: str, n_bytes: int = 1_048_576) -> d
     }
 
 
-def get_token_password(username: str, password: str) -> dict:
+def get_token_password(
+    username: str, password: str, scope: str | None = None,
+) -> dict:
     """Resource Owner Password Credentials grant via cdse-public.
 
-    Returns the full token response dict so callers can capture the
-    `refresh_token` for long-lived storage (avoids needing to keep the
-    password in .env after the first auth)."""
-    r = requests.post(
-        TOKEN_URL,
-        data={
-            "grant_type": "password",
-            "client_id": "cdse-public",
-            "username": username,
-            "password": password,
-        },
-        timeout=30,
-    )
+    If `scope="offline_access"` is passed and CDSE allows it, the returned
+    refresh_token is long-lived (offline-type) rather than the default
+    ~1-hour ephemeral refresh. Useful for setting up a pipeline that
+    doesn't need the password sitting in .env permanently.
+    """
+    data = {
+        "grant_type": "password",
+        "client_id": "cdse-public",
+        "username": username,
+        "password": password,
+    }
+    if scope:
+        data["scope"] = scope
+    r = requests.post(TOKEN_URL, data=data, timeout=30)
     r.raise_for_status()
     return r.json()
 

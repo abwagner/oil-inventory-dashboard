@@ -257,6 +257,38 @@ to mint a refresh token, then operate on the refresh token going forward.
 Username + initial password get used once; the refresh token rotates
 out of the way of the password.
 
+### Step 0 follow-up (2026-05-19): downloads PASS, refresh-token lifetime is short
+
+Re-ran `scripts/test_desp.py` on swagner-server after adding
+`CDSE_USERNAME` + `CDSE_PASSWORD` to its `.env`:
+
+- Auth: password grant via `cdse-public` ✅
+- Catalog: both S1 and S2 ✅ (same as before)
+- **Downloads: HTTP 200, 1 MB binary, `Content-Type: application/zip`,
+  magic bytes `504b0304` (PK header) ✅** — confirmed for both S1 GRD
+  and S2 L2A products.
+
+DESP raw-imagery capability is fully unblocked.
+
+**Wrinkle**: the emitted refresh token has `exp = iat + 3600` — a
+**1-hour lifetime**, much shorter than the typical multi-day Keycloak
+default. That's too short to be useful as a long-lived secret in `.env`
+for a weekly cron — by the time the next pipeline run fires, the
+refresh token is long expired.
+
+Practical options:
+
+- **Keep `CDSE_USERNAME` + `CDSE_PASSWORD` in `.env`**, password-grant on
+  every pipeline invocation. Simple, reliable. The password is .env's
+  long-lived secret; ephemeral access + refresh tokens never persist.
+- **Probe `scope=offline_access`** (`scripts/probe_offline_scope.py`) to
+  see if CDSE issues offline-type refresh tokens with much longer
+  lifetimes under that scope. If yes, drop the password and store only
+  the long-lived refresh token. If no, keep the password.
+
+Either way: Step 0 is done. Step 1 (S1 GRD ingest pipeline) is now
+unblocked.
+
 **Observed scene sizes inform Step 3 budget**:
 - S1 IW GRD: ~1 GB/scene (range: 850 MB – 1.7 GB)
 - S2 L2A: ~1 GB/scene (range: 860 MB – 1.2 GB)
