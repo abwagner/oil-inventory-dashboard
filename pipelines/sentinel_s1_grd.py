@@ -46,6 +46,7 @@ import numpy as np
 import rasterio
 import rasterio.warp
 import requests
+import structlog
 
 from _cdse_auth import CdseAuthError, get_access_token
 from _env import load_repo_env
@@ -53,7 +54,7 @@ from _s1_calibration import apply_calibration, linear_to_db, parse_calibration_l
 
 load_repo_env()
 
-log = logging.getLogger("sentinel_s1_grd")
+log = structlog.get_logger("sentinel_s1_grd")
 
 
 CATALOG_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"

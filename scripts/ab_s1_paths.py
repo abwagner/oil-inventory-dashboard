@@ -24,13 +24,21 @@ from pathlib import Path
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Reuse the dashboard's storage layer so this script reads from MinIO when
+# DATA_URI is s3:// (the production setup on swagner-server).
+sys.path.insert(0, str(REPO_ROOT / "pipelines"))
+from _env import data_uri, load_repo_env, storage_fs  # noqa: E402
+
+load_repo_env()
 
 
-def _load_clusters(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        print(f"  WARN  {path} not found — skipping")
+def _load_clusters(uri: str) -> pd.DataFrame:
+    """Read clusters.parquet from either local disk or s3:// via fsspec."""
+    fs = storage_fs()
+    if not fs.exists(uri):
+        print(f"  WARN  {uri} not found — skipping")
         return pd.DataFrame()
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(uri)
     if "is_persistent" in df.columns:
         df["is_persistent"] = df["is_persistent"].astype(bool)
     if "any_on_land" in df.columns:
@@ -70,9 +78,16 @@ def _mean_nearest_neighbor_km(a: pd.DataFrame, b: pd.DataFrame) -> float | None:
     return float(dist.min(axis=1).mean())
 
 
-def compare(aoi: str, data_dir: Path) -> dict:
-    sh_path = data_dir / "sentinel_sar" / aoi / "clusters.parquet"
-    grd_path = data_dir / "sentinel_s1_grd" / aoi / "clusters.parquet"
+def compare(aoi: str, data_dir: Path | None = None) -> dict:
+    if data_dir is not None:
+        # Explicit local data dir wins — useful right after running the
+        # pipeline locally on swagner-server, before mc-mirror to MinIO.
+        sh_path = str(data_dir / "sentinel_sar" / aoi / "clusters.parquet")
+        grd_path = str(data_dir / "sentinel_s1_grd" / aoi / "clusters.parquet")
+    else:
+        # Default: follow the dashboard's storage layer (s3:// in production).
+        sh_path = data_uri("sentinel_sar", aoi, "clusters.parquet")
+        grd_path = data_uri("sentinel_s1_grd", aoi, "clusters.parquet")
 
     print(f"\n─── A/B clusters for AOI: {aoi} ───")
     print(f"  SH path:  {sh_path}")
@@ -126,11 +141,12 @@ def compare(aoi: str, data_dir: Path) -> dict:
 def main() -> int:
     p = argparse.ArgumentParser(description="A/B Sentinel Hub vs DESP-raw S1 clusters")
     p.add_argument("--aoi", required=True, help="AOI name (e.g. persian_gulf_oman)")
-    p.add_argument("--data-dir", type=Path,
-                   default=REPO_ROOT / "data",
-                   help="Root data dir (contains sentinel_sar/ + sentinel_s1_grd/)")
+    p.add_argument("--data-dir", type=Path, default=None,
+                   help="Override: read from local DATA_DIR instead of the "
+                        "dashboard's storage layer (data_uri). Use this right "
+                        "after a local pipeline run, before mc-mirror.")
     args = p.parse_args()
-    compare(args.aoi, args.data_dir)
+    compare(args.aoi, data_dir=args.data_dir)
     return 0
 
 
