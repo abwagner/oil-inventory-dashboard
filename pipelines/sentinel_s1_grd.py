@@ -98,16 +98,41 @@ def _bbox_to_wkt_polygon(bbox: tuple[float, float, float, float]) -> str:
     )
 
 
+def _canonical_acquisition_key(name: str) -> str:
+    """Group key shared by the COG and legacy variants of the same scene.
+
+    DESP exposes each S1 acquisition twice — once as a Cloud-Optimized
+    GeoTIFF (`..._<crc>_COG.SAFE`) and once in legacy format
+    (`..._<crc>.SAFE`). The two have different per-product CRC16 tags but
+    cover identical data. Strip both `_COG` and the trailing CRC tag to
+    get a key that's stable across the pair.
+
+        S1C_IW_GRDH_1SDV_20260519T015838_20260519T015900_007716_00FAE8_37CD_COG.SAFE
+        S1C_IW_GRDH_1SDV_20260519T015838_20260519T015900_007716_00FAE8_7F59.SAFE
+                                                                       ↑↑↑↑↑↑↑↑↑↑ vary
+    both → "S1C_IW_GRDH_1SDV_20260519T015838_20260519T015900_007716_00FAE8"
+    """
+    name = name.removesuffix(".SAFE")
+    if name.endswith("_COG"):
+        name = name[:-4]
+    return name.rsplit("_", 1)[0]
+
+
 def search_scenes(
     bbox: tuple[float, float, float, float],
     start: str, end: str, token: str,
     top: int = 50,
+    prefer_cog: bool = True,
 ) -> list[SceneMeta]:
     """OData search for S1 IW GRD products intersecting `bbox` in [start, end).
 
     `start` and `end` are ISO timestamps (Z-suffixed UTC). `top` caps the
     result set — Sentinel-1 has 6-day revisit at most AOIs so a 14-day
     window typically yields <20 scenes per AOI.
+
+    DESP returns both COG and legacy variants of each acquisition; with
+    `prefer_cog=True` (default) we keep one per acquisition, COG-favored
+    where available. COG is ~half the size of legacy.
     """
     poly = _bbox_to_wkt_polygon(bbox)
     filter_clauses = " and ".join([
@@ -127,14 +152,34 @@ def search_scenes(
         timeout=DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
-    out: list[SceneMeta] = []
+    raw: list[SceneMeta] = []
     for p in r.json().get("value", []):
-        out.append(SceneMeta(
+        raw.append(SceneMeta(
             id=p["Id"], name=p["Name"],
             content_length=int(p.get("ContentLength") or 0),
             start_time=p["ContentDate"]["Start"],
         ))
-    return out
+    if not prefer_cog:
+        return raw
+
+    # Dedup: one scene per acquisition, COG variant preferred.
+    by_acq: dict[str, SceneMeta] = {}
+    for s in raw:
+        key = _canonical_acquisition_key(s.name)
+        existing = by_acq.get(key)
+        if existing is None:
+            by_acq[key] = s
+            continue
+        # Pick the COG variant when we see the pair.
+        existing_cog = "_COG" in existing.name
+        this_cog = "_COG" in s.name
+        if this_cog and not existing_cog:
+            by_acq[key] = s
+    n_deduped = len(raw) - len(by_acq)
+    if n_deduped:
+        log.info("dedup_cog_variants", before=len(raw), after=len(by_acq),
+                 removed=n_deduped)
+    return list(by_acq.values())
 
 
 def filter_already_ingested(
