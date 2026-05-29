@@ -220,31 +220,6 @@
   <div class="chart-wrap"><canvas id="mainChart"></canvas></div>
 </div>
 
-<!-- Chart 2 & 3 side by side -->
-<div class="grid-2">
-  <!-- Cushing -->
-  <div class="chart-section">
-    <div class="chart-header">
-      <div class="chart-title">Cushing, OK stocks</div>
-      <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--purple)"></span>Mbbl</span>
-      </div>
-    </div>
-    <div class="chart-wrap"><canvas id="cushingChart"></canvas></div>
-  </div>
-
-  <!-- Utilization -->
-  <div class="chart-section">
-    <div class="chart-header">
-      <div class="chart-title">Refinery utilization</div>
-      <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--blue)"></span>Current %</span>
-      </div>
-    </div>
-    <div class="chart-wrap"><canvas id="utilChart"></canvas></div>
-  </div>
-</div>
-
 <!-- Chart: Product inventories -->
 <div class="chart-section">
   <div class="chart-header">
@@ -257,7 +232,7 @@
   <div class="chart-wrap"><canvas id="productsChart"></canvas></div>
 </div>
 
-<!-- Chart 4: Utilization YoY -->
+<!-- Chart: Refinery utilization year-over-year -->
 <div class="chart-section">
   <div class="chart-header">
     <div class="chart-title">Refinery utilization — year-over-year</div>
@@ -266,7 +241,10 @@
   <div class="chart-wrap"><canvas id="yoyChart"></canvas></div>
 </div>
 
-<!-- Section: Regional (PADD) Inventories -->
+<!-- Section: Regional (PADD) Inventories — hidden pending broader model.
+     /api/regional still serves data; the JS renderer is also short-circuited
+     (see renderRegionalMap call in loadData). Uncomment to re-enable. -->
+<!--
 <div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
   <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Regional <span style="color:var(--amber)">Inventories</span></h2>
   <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="regionalSub">US crude stocks by PADD region · weekly (excl SPR) · fill = week-over-week change</p>
@@ -288,16 +266,18 @@
 </div>
 
 <div id="regionalCards" class="stats-row"></div>
+-->
 
-<!-- Section: Global Inventories -->
+
+<!-- Section: Global Inventories & Balance -->
 <div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
-  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Global <span style="color:var(--amber)">Inventories</span></h2>
-  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;">EIA Short-Term Energy Outlook (STEO) monthly data · OECD commercial stocks + supply/demand balance</p>
+  <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Global <span style="color:var(--amber)">Inventories &amp; Balance</span></h2>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="globalSub">EIA STEO (monthly stocks + inventory change) · IEA OMR (quarterly supply/demand balance)</p>
 </div>
 
 <div id="globalStats" class="stats-row"></div>
 
-<!-- Chart 5: OECD stocks: US vs Other OECD -->
+<!-- OECD stocks: US vs Other OECD (STEO) -->
 <div class="chart-section">
   <div class="chart-header">
     <div class="chart-title">OECD commercial stocks — US vs rest of OECD</div>
@@ -309,17 +289,20 @@
   <div class="chart-wrap"><canvas id="oecdChart"></canvas></div>
 </div>
 
-<!-- Chart 6 & 7 side by side -->
+<!-- Combined supply/demand (IEA OMR quarterly, STEO monthly resampled as fallback)
+     + World inventory change (STEO) side by side. -->
 <div class="grid-2">
   <div class="chart-section">
     <div class="chart-header">
-      <div class="chart-title">World supply vs demand</div>
+      <div class="chart-title">World supply vs demand (quarterly)</div>
       <div class="chart-legend">
-        <span><span class="legend-line" style="background:var(--green)"></span>Production</span>
-        <span><span class="legend-dash" style="border-color:var(--amber)"></span>Consumption</span>
+        <span><span class="legend-line" style="background:#10b981"></span>IEA Supply</span>
+        <span><span class="legend-dash" style="border-color:#f59e0b"></span>IEA Demand</span>
+        <span><span class="legend-line" style="background:rgba(16,185,129,0.5)"></span>EIA Supply</span>
+        <span><span class="legend-dash" style="border-color:rgba(245,158,11,0.5)"></span>EIA Demand</span>
       </div>
     </div>
-    <div class="chart-wrap"><canvas id="supplyDemandChart"></canvas></div>
+    <div class="chart-wrap"><canvas id="balanceChart"></canvas></div>
   </div>
 
   <div class="chart-section">
@@ -334,10 +317,11 @@
   </div>
 </div>
 
+
 <!-- Section: Tanker Positions -->
 <div style="border-top:1px solid var(--border); margin: 2rem 0 1.5rem; padding-top: 1.5rem;">
   <h2 style="font-size:18px; font-weight:600; margin-bottom: 0.25rem;">Tanker <span style="color:var(--amber)">Positions</span></h2>
-  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="shipsSub">Global crude tanker positions from AIS · positions only — no load state, voyage intent, or identity verification (TDD §9.7)</p>
+  <p style="font-size:13px; color:var(--text3); margin-bottom: 1.25rem;" id="shipsSub">Crude on water estimates from AIS-visible fleet — coverage is uneven (heavy NW Europe, sparse Persian Gulf / Red Sea per TDD §4.2.1.1). Directional, not authoritative.</p>
 </div>
 
 <div id="shipsStats" class="stats-row"></div>
@@ -357,6 +341,29 @@
     <svg id="shipMap" viewBox="0 0 960 480" preserveAspectRatio="xMidYMid meet"
          style="width:100%; max-width:960px; height:auto; background:#0e0e10;"></svg>
   </div>
+</div>
+
+<!-- Floating-storage signal: persistent SAR clusters near named terminals -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Persistent SAR clusters near major terminals</div>
+    <div class="chart-legend">
+      <span><span class="legend-line" style="background:#f59e0b"></span>Persistent cluster count</span>
+      <span style="color:var(--text3)">snapshot count of ≥3-scene over-water clusters within terminal radius (TDD §12.3)</span>
+    </div>
+  </div>
+  <div class="chart-wrap" style="height: 420px;"><canvas id="floatingStorageChart"></canvas></div>
+</div>
+
+<!-- Week-over-week trend at top terminals (Phase 3b — TDD §12.3) -->
+<div class="chart-section">
+  <div class="chart-header">
+    <div class="chart-title">Floating-storage trend at top terminals</div>
+    <div class="chart-legend" id="floatingStorageTrendLegend">
+      <span style="color:var(--text3)">accumulates 1 sample per weekly SAR cron — w/w change is the actionable signal</span>
+    </div>
+  </div>
+  <div class="chart-wrap"><canvas id="floatingStorageTrendChart"></canvas></div>
 </div>
 
 <div class="footnote" id="footNote"></div>
@@ -401,12 +408,10 @@ function renderStats(data) {
 
   const cards = [
     { label: 'Crude inv', value: fmt(last.us_stocks_mbbl, 1) + ' Mbbl', delta: delta(last.us_stocks_mbbl, prev?.us_stocks_mbbl) },
-    { label: 'Cushing', value: fmt(last.cushing_mbbl, 1) + ' Mbbl', delta: delta(last.cushing_mbbl, prev?.cushing_mbbl) },
     { label: 'Gasoline', value: fmt(last.gasoline_mbbl, 1) + ' Mbbl', delta: delta(last.gasoline_mbbl, prev?.gasoline_mbbl) },
     { label: 'Distillates', value: fmt(last.distillate_mbbl, 1) + ' Mbbl', delta: delta(last.distillate_mbbl, prev?.distillate_mbbl) },
     { label: 'Production', value: fmt(last.production_mbpd, 2) + ' Mbpd', delta: delta(last.production_mbpd, prev?.production_mbpd) },
     { label: 'Exports', value: fmt(last.exports_mbpd, 2) + ' Mbpd', delta: delta(last.exports_mbpd, prev?.exports_mbpd) },
-    { label: 'Utilization', value: fmt(last.utilization_pct, 1) + '%', delta: delta(last.utilization_pct, prev?.utilization_pct) },
   ];
 
   document.getElementById('statsRow').innerHTML = cards.map(c => `
@@ -455,62 +460,6 @@ function renderMainChart(data) {
         y: { position: 'left', title: { display: true, text: 'Inventory (Mbbl)' }, grid: gridOpts },
         y1: { position: 'right', title: { display: true, text: 'Flow (Mbpd)' }, grid: noGrid,
               min: 2, max: 16 }
-      }
-    }
-  });
-}
-
-// ---- Cushing Chart ----
-function renderCushingChart(data) {
-  destroyChart('cushing');
-  const labels = data.map(d => fmtDate(d.date));
-  charts.cushing = new Chart(document.getElementById('cushingChart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Cushing (Mbbl)', data: data.map(d => d.cushing_mbbl),
-        borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)',
-        borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(2)} Mbbl` } }
-      },
-      scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
-        y: { title: { display: true, text: 'Mbbl' }, grid: gridOpts }
-      }
-    }
-  });
-}
-
-// ---- Utilization Chart (time series) ----
-function renderUtilChart(data) {
-  destroyChart('util');
-  const labels = data.map(d => fmtDate(d.date));
-  charts.util = new Chart(document.getElementById('utilChart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Utilization %', data: data.map(d => d.utilization_pct),
-        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
-        borderWidth: 2, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.15, fill: true
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => `${c.parsed.y?.toFixed(1)}%` } }
-      },
-      scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
-        y: { title: { display: true, text: '%' }, grid: gridOpts, ticks: { callback: v => v + '%' } }
       }
     }
   });
@@ -846,52 +795,245 @@ async function renderShipMap() {
   }
 
   // ---- Stats cards ----
+  // 'Crude on water' aggregate comes from /api/ships' new oil_on_water block.
+  // It's an AIS-visible-fleet estimate — uneven coverage caveat in the
+  // subtitle and TDD §9.7. Falls back gracefully when the new fields aren't
+  // present (e.g. snapshot was written by an older Phase 1).
   const total = ships.length;
-  const crude = ships.filter(s => s.ship_type === 80).length;
-  const underway = ships.filter(s => (s.sog || 0) > 0.5).length;
+  const oow = aisData.oil_on_water || {};
+  const totalBbl = oow.total_bbl || 0;
+  const classified = oow.n_classified || 0;
+  const byClass = oow.by_class || {};
+  let topClass = null;
+  let topClassBbl = 0;
+  let topClassN = 0;
+  for (const [cls, v] of Object.entries(byClass)) {
+    if ((v.bbl || 0) > topClassBbl) {
+      topClass = cls; topClassBbl = v.bbl; topClassN = v.n;
+    }
+  }
   const sarCount = sarDets.length;
   const cards = [
-    { label: 'AIS tankers', value: total },
-    { label: 'AIS crude (type 80)', value: crude },
-    { label: 'AIS underway', value: underway },
-    { label: 'SAR vessels (transient)', value: sarCount },
+    { label: 'Crude on water (est)',
+      value: totalBbl ? (totalBbl / 1e6).toFixed(0) + ' Mbbl' : '–',
+      sub: classified ? `from ${classified.toLocaleString()} classified tankers` : 'no class data yet' },
+    { label: 'AIS tankers visible',
+      value: total.toLocaleString(),
+      sub: classified ? `${classified.toLocaleString()} classified · ${(total - classified).toLocaleString()} unsized` : 'awaiting class data' },
+    { label: 'Top class by tonnage',
+      value: topClass ? topClass : '–',
+      sub: topClass ? `${(topClassBbl / 1e6).toFixed(0)} Mbbl · n=${topClassN}` : 'no class data yet' },
+    { label: 'SAR vessels (transient)',
+      value: sarCount.toLocaleString(),
+      sub: '88 m/px · class indistinguishable' },
   ];
   document.getElementById('shipsStats').innerHTML = cards.map(c => `
     <div class="stat-card">
       <div class="stat-label">${c.label}</div>
-      <div class="stat-value">${(c.value || 0).toLocaleString()}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-delta" style="color:var(--text3)">${c.sub || ''}</div>
     </div>
   `).join('');
 
-  // Subtitle
+  // Subtitle: now leads with the AIS-coverage caveat since the headline number
+  // is an aggregate estimate, not a count.
   const aisSnap = aisData.snapshot_at ? String(aisData.snapshot_at).split(' ').slice(0,2).join(' ') : null;
   const sarSnap = sarData.last_seen ? String(sarData.last_seen).slice(0,19) : null;
   const aoisSummary = (sarData.aois || []).map(a => `${a.name} (${a.transient_water_count})`).join(', ');
   document.getElementById('shipsSub').textContent =
-    `AIS tanker positions${aisSnap ? ' through ' + aisSnap : ''} · ` +
-    `SAR vessels${sarSnap ? ' through ' + sarSnap : ''}` +
-    (aoisSummary ? ` · AOIs: ${aoisSummary}` : '') +
-    ` · positions only, no load state / voyage intent / identity verification (TDD §9.7)`;
+    `Crude on water estimates from AIS-visible fleet only — coverage is uneven ` +
+    `(heavy NW Europe, sparse Persian Gulf / Red Sea per TDD §4.2.1.1). Directional, not authoritative. ` +
+    `AIS through ${aisSnap || '–'}` +
+    (sarSnap ? ` · SAR through ${sarSnap}` : '') +
+    (aoisSummary ? ` · SAR AOIs: ${aoisSummary}` : '');
+}
+
+// ---- Floating storage: persistent SAR clusters at named terminals (TDD §12.3) ----
+async function renderFloatingStorage() {
+  destroyChart('floatingStorage');
+  destroyChart('floatingStorageTrend');
+  const r = await fetch('/api/sar_floating_storage');
+  const body = await r.json();
+  const terminals = (body.terminals || []).slice();
+  renderFloatingStorageTrend(terminals);
+  // Sort descending by persistent_count so the busiest hotspots are at the
+  // top of a horizontal bar chart. Zero-count terminals stay visible (they
+  // signal "no SAR coverage yet" for that region) but at the bottom.
+  terminals.sort((a, b) => (b.persistent_count || 0) - (a.persistent_count || 0));
+  const labels = terminals.map(t => t.name);
+  const counts = terminals.map(t => t.persistent_count || 0);
+  charts.floatingStorage = new Chart(document.getElementById('floatingStorageChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Persistent SAR clusters',
+        data: counts,
+        backgroundColor: counts.map(c => c > 0 ? 'rgba(245,158,11,0.7)' : 'rgba(120,120,120,0.25)'),
+        borderColor: counts.map(c => c > 0 ? '#f59e0b' : '#555'),
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const t = terminals[c.dataIndex];
+              return [
+                `${c.parsed.x} persistent cluster(s)`,
+                `radius: ${t.radius_km} km`,
+                t.description,
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'persistent cluster count' }, grid: gridOpts, beginAtZero: true },
+        y: { grid: noGrid, ticks: { font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+// Week-over-week trend chart — multi-line with one line per top-N terminal.
+// On first deploy each terminal has 1 history sample (today's snapshot); as
+// the weekly SAR cron progresses, the lines build out. Designed so users
+// don't see an empty chart on day-one — but the actionable view is several
+// weeks in.
+function renderFloatingStorageTrend(terminals) {
+  const palette = [
+    { border: '#f59e0b', fill: 'rgba(245,158,11,0.15)' },  // amber
+    { border: '#3b82f6', fill: 'rgba(59,130,246,0.15)' },  // blue
+    { border: '#10b981', fill: 'rgba(16,185,129,0.15)' },  // green
+    { border: '#a78bfa', fill: 'rgba(167,139,250,0.15)' }, // purple
+    { border: '#ef4444', fill: 'rgba(239,68,68,0.15)' },   // red
+    { border: '#71717a', fill: 'rgba(113,113,122,0.15)' }, // gray
+  ];
+  // Pick the top 6 terminals by current count; ignore ones with no history.
+  const withHistory = terminals.filter(t => (t.history || []).length > 0);
+  withHistory.sort((a, b) => (b.persistent_count || 0) - (a.persistent_count || 0));
+  const top = withHistory.slice(0, 6);
+
+  // Union of all observed_at values, sorted ascending — chart's x-axis.
+  const allDates = new Set();
+  for (const t of top) for (const h of t.history) allDates.add(h.observed_at);
+  const labels = [...allDates].sort();
+
+  const datasets = top.map((t, i) => {
+    const c = palette[i % palette.length];
+    const byDate = Object.fromEntries(
+      (t.history || []).map(h => [h.observed_at, h.persistent_count])
+    );
+    return {
+      label: t.name,
+      data: labels.map(d => byDate[d] ?? null),
+      borderColor: c.border,
+      backgroundColor: c.border,
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 6,
+      tension: 0.2,
+      spanGaps: false,
+    };
+  });
+
+  // Legend swatches
+  const legendHtml = top.map((t, i) => {
+    const c = palette[i % palette.length];
+    return `<span><span class="legend-line" style="background:${c.border}"></span>${t.name}</span>`;
+  }).join(' ') +
+    ` <span style="color:var(--text3)">· accumulates 1 sample per weekly SAR cron — w/w change is the actionable signal</span>`;
+  const legendEl = document.getElementById('floatingStorageTrendLegend');
+  if (legendEl) legendEl.innerHTML = legendHtml;
+
+  charts.floatingStorageTrend = new Chart(
+    document.getElementById('floatingStorageTrendChart'),
+    {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y ?? '–'}` } }
+        },
+        scales: {
+          x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+          y: { title: { display: true, text: 'persistent clusters' }, grid: gridOpts, beginAtZero: true }
+        }
+      }
+    }
+  );
 }
 
 // ---- Global Inventory Charts ----
 
-function renderGlobalStats(data) {
-  if (!data.length) return;
-  const last = data[data.length - 1];
-  const prev = data.length > 1 ? data[data.length - 2] : null;
-  // Find pre-crisis (Feb 2026) value
-  const preCrisis = data.find(d => d.date === '2026-02') || data.find(d => d.date === '2026-01');
+function _periodSortKey(p) {
+  const m = /^([1-4])Q(\d{2})$/.exec(p);
+  return m ? (2000 + +m[2]) * 10 + +m[1] : 0;
+}
 
-  const cards = [
-    { label: 'OECD total', value: fmt(last.oecd_stocks, 0) + ' Mbbl', delta: delta(last.oecd_stocks, prev?.oecd_stocks) },
-    { label: 'US total', value: fmt(last.us_stocks, 0) + ' Mbbl', delta: delta(last.us_stocks, prev?.us_stocks) },
-    { label: 'Other OECD', value: fmt(last.other_oecd_stocks, 0) + ' Mbbl',
-      delta: preCrisis ? { text: (last.other_oecd_stocks - preCrisis.other_oecd_stocks).toFixed(0) + ' from Feb', cls: last.other_oecd_stocks < preCrisis.other_oecd_stocks ? 'down' : 'up' } : {text:'–',cls:''} },
-    { label: 'World inv Δ', value: fmt(last.world_inv_change, 1) + ' Mbpd', delta: { text: last.world_inv_change > 0 ? 'build' : 'draw', cls: last.world_inv_change > 0 ? 'up' : 'down' } },
-    { label: 'Supply−demand', value: fmt((last.world_production||0)-(last.world_consumption||0), 1) + ' Mbpd',
-      delta: { text: 'prod ' + fmt(last.world_production,1) + ' · cons ' + fmt(last.world_consumption,1), cls: '' } },
-  ];
+// STEO is monthly ('YYYY-MM'); the OMR chart is quarterly. Bucket STEO
+// monthlies into quarterly averages so they can fill quarters OMR doesn't
+// have — most importantly, when OMR hasn't been ingested at all and the
+// chart would otherwise be blank.
+function _quarterKey(monthStr) {
+  if (!monthStr) return null;
+  const [y, m] = String(monthStr).slice(0, 7).split('-').map(Number);
+  if (!y || !m) return null;
+  return `${Math.floor((m - 1) / 3) + 1}Q${String(y).slice(-2)}`;
+}
+function _steoToQuarterly(rows) {
+  const buckets = {};
+  for (const r of (rows || [])) {
+    const k = _quarterKey(r.date);
+    if (!k) continue;
+    (buckets[k] ??= { prod: [], cons: [] });
+    if (r.world_production != null) buckets[k].prod.push(r.world_production);
+    if (r.world_consumption != null) buckets[k].cons.push(r.world_consumption);
+  }
+  const out = {};
+  for (const [k, b] of Object.entries(buckets)) {
+    out[k] = {
+      supply: b.prod.length ? b.prod.reduce((a, c) => a + c, 0) / b.prod.length : null,
+      demand: b.cons.length ? b.cons.reduce((a, c) => a + c, 0) / b.cons.length : null,
+    };
+  }
+  return out;
+}
+
+function renderGlobalStats(steoData, omrBody) {
+  // STEO cards (latest monthly observation) + OMR cards (latest quarterly).
+  const steoLast = steoData.length ? steoData[steoData.length - 1] : null;
+  const steoPrev = steoData.length > 1 ? steoData[steoData.length - 2] : null;
+  const omrQ = (rows) => (rows || []).filter(r => r.period_type === 'quarter').slice(-1)[0];
+  const omrSup = omrQ(omrBody?.series?.total_supply);
+  const omrDem = omrQ(omrBody?.series?.total_demand);
+
+  const cards = [];
+  if (steoLast) {
+    cards.push(
+      { label: 'OECD stocks', value: fmt(steoLast.oecd_stocks, 0) + ' Mbbl', delta: delta(steoLast.oecd_stocks, steoPrev?.oecd_stocks) },
+      { label: 'US stocks', value: fmt(steoLast.us_stocks, 0) + ' Mbbl', delta: delta(steoLast.us_stocks, steoPrev?.us_stocks) },
+      { label: 'World inv Δ', value: fmt(steoLast.world_inv_change, 1) + ' Mbpd',
+        delta: { text: steoLast.world_inv_change > 0 ? 'build' : 'draw', cls: steoLast.world_inv_change > 0 ? 'up' : 'down' } },
+    );
+  }
+  if (omrSup && omrDem) {
+    cards.push(
+      { label: 'Supply (OMR ' + omrSup.period + ')', value: fmt(omrSup.value, 1) + ' Mbpd', delta: { text: '–', cls: '' } },
+      { label: 'Demand (OMR ' + omrDem.period + ')', value: fmt(omrDem.value, 1) + ' Mbpd', delta: { text: '–', cls: '' } },
+      { label: 'Supply − demand', value: fmt(omrSup.value - omrDem.value, 1) + ' Mbpd',
+        delta: { text: omrSup.value > omrDem.value ? 'surplus' : 'deficit',
+                 cls: omrSup.value > omrDem.value ? 'up' : 'down' } },
+    );
+  }
   document.getElementById('globalStats').innerHTML = cards.map(c => `
     <div class="stat-card">
       <div class="stat-label">${c.label}</div>
@@ -899,6 +1041,15 @@ function renderGlobalStats(data) {
       <div class="stat-delta ${c.delta.cls}">${c.delta.text}</div>
     </div>
   `).join('');
+}
+
+function renderGlobalSub(omrBody) {
+  const sub = document.getElementById('globalSub');
+  if (!sub) return;
+  const omr = omrBody?.report_date
+    ? ` · OMR through ${omrBody.report_date}`
+    : ' · OMR not ingested yet';
+  sub.textContent = `EIA STEO (monthly stocks + inventory change) · IEA OMR (quarterly supply/demand balance)${omr}`;
 }
 
 function renderOecdChart(data) {
@@ -936,24 +1087,49 @@ function renderOecdChart(data) {
   });
 }
 
-function renderSupplyDemandChart(data) {
-  destroyChart('supplyDemand');
-  const labels = data.map(d => d.date);
-  charts.supplyDemand = new Chart(document.getElementById('supplyDemandChart'), {
+// Combined supply/demand chart with both sources plotted side by side.
+// IEA OMR is bolder (heavier line, full opacity); EIA STEO is the same
+// supply/demand color but at reduced opacity + thinner line, so the
+// supply-vs-demand visual remains primary and source-comparison is
+// secondary. Agencies disagree most during stressed periods (e.g.
+// STEO models near-term disruption more aggressively than OMR Table 1b)
+// — showing both lets the operator see the spread.
+function renderBalanceChart(steoData, omrBody) {
+  destroyChart('balance');
+  const omrSup = {}, omrDem = {};
+  (omrBody?.series?.total_supply || []).forEach(r => {
+    if (r.period_type === 'quarter') omrSup[r.period] = r.value;
+  });
+  (omrBody?.series?.total_demand || []).forEach(r => {
+    if (r.period_type === 'quarter') omrDem[r.period] = r.value;
+  });
+  const steoQ = _steoToQuarterly(steoData || []);
+  const allKeys = new Set([
+    ...Object.keys(omrSup), ...Object.keys(omrDem), ...Object.keys(steoQ),
+  ]);
+  const labels = [...allKeys].sort((a, b) => _periodSortKey(a) - _periodSortKey(b));
+  const omrSupply = labels.map(k => omrSup[k] ?? null);
+  const omrDemand = labels.map(k => omrDem[k] ?? null);
+  const steoSupply = labels.map(k => steoQ[k]?.supply ?? null);
+  const steoDemand = labels.map(k => steoQ[k]?.demand ?? null);
+
+  charts.balance = new Chart(document.getElementById('balanceChart'), {
     type: 'line',
     data: {
       labels,
       datasets: [
-        {
-          label: 'Production (Mbpd)', data: data.map(d => d.world_production),
+        { label: 'IEA Supply (Mbpd)', data: omrSupply,
           borderColor: '#10b981', backgroundColor: '#10b981',
-          borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, tension: 0.2
-        },
-        {
-          label: 'Consumption (Mbpd)', data: data.map(d => d.world_consumption),
+          borderWidth: 2.5, pointRadius: 2.5, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
+        { label: 'IEA Demand (Mbpd)', data: omrDemand,
           borderColor: '#f59e0b', backgroundColor: '#f59e0b',
-          borderWidth: 2, borderDash: [6,3], pointRadius: 2, pointHoverRadius: 5, tension: 0.2
-        }
+          borderWidth: 2.5, borderDash: [6, 3], pointRadius: 2.5, pointHoverRadius: 5, tension: 0.2, spanGaps: false },
+        { label: 'EIA Supply (Mbpd)', data: steoSupply,
+          borderColor: 'rgba(16,185,129,0.5)', backgroundColor: 'rgba(16,185,129,0.5)',
+          borderWidth: 1.5, pointRadius: 1.5, pointHoverRadius: 4, tension: 0.2, spanGaps: false },
+        { label: 'EIA Demand (Mbpd)', data: steoDemand,
+          borderColor: 'rgba(245,158,11,0.5)', backgroundColor: 'rgba(245,158,11,0.5)',
+          borderWidth: 1.5, borderDash: [3, 3], pointRadius: 1.5, pointHoverRadius: 4, tension: 0.2, spanGaps: false },
       ]
     },
     options: {
@@ -963,7 +1139,7 @@ function renderSupplyDemandChart(data) {
         tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(1) ?? '–'}` } }
       },
       scales: {
-        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: noGrid },
+        x: { type: 'category', ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: noGrid },
         y: { title: { display: true, text: 'Mbpd' }, grid: gridOpts }
       }
     }
@@ -1047,6 +1223,26 @@ function setupRows(st) {
       statusClass: 'empty',
       btnLabel: 'Refresh',
       btnDisabled: false,
+    });
+  }
+
+  // OMR: show row if no issue ingested yet, if currently running, or on error.
+  // The free OMR PDF availability is conditional (IEA describes it as
+  // "exceptional"), so we don't flag it as stale on age alone.
+  const omr = st.omr || {};
+  const omrIngest = omr.ingest || {status: 'idle'};
+  if (!omr.latest_report || omrIngest.status === 'running' || omrIngest.error) {
+    rows.push({
+      pipeline: 'omr',
+      label: 'IEA Oil Market Report',
+      status: omrIngest.status === 'running'
+        ? `running… (started ${fmtRel(omrIngest.started_at)})`
+        : omrIngest.error
+          ? `error: ${omrIngest.error}`
+          : 'no OMR yet',
+      statusClass: omrIngest.status === 'running' ? 'running' : (omrIngest.error ? 'error' : 'empty'),
+      btnLabel: 'Pull IEA OMR',
+      btnDisabled: omrIngest.status === 'running',
     });
   }
 
@@ -1162,10 +1358,11 @@ function startStatusPolling() {
   const tick = async () => {
     const st = await fetchStatus();
     renderSetupBanner(st);
-    const anyRunning = ['eia', 'ais', 'ais-census', 'sar'].some(p => {
+    const anyRunning = ['eia', 'omr', 'ais', 'ais-census', 'sar'].some(p => {
       const ig = (p === 'ais') ? (st.ais && st.ais.ingest_phase1)
               : (p === 'ais-census') ? (st.ais && st.ais.ingest_census)
               : (p === 'sar') ? (st.sar && st.sar.ingest)
+              : (p === 'omr') ? (st.omr && st.omr.ingest)
               : (st.eia && st.eia.ingest);
       return ig && ig.status === 'running';
     });
@@ -1190,6 +1387,7 @@ async function loadData() {
   // If something's already running (e.g. user hit reload mid-ingest), keep polling.
   const ingests = [
     st.eia && st.eia.ingest,
+    st.omr && st.omr.ingest,
     st.ais && st.ais.ingest_phase1,
     st.ais && st.ais.ingest_census,
     st.sar && st.sar.ingest,
@@ -1207,22 +1405,25 @@ async function loadData() {
 
   renderStats(rawData);
   renderMainChart(rawData);
-  renderCushingChart(rawData);
-  renderUtilChart(rawData);
   renderProductsChart(rawData);
   await renderYoyChart();
-  await renderRegionalMap();
 
-  const globalResp = await fetch('/api/global?months=24');
-  const globalData = await globalResp.json();
+  // Fetch both STEO and OMR up front; the Global section's stats + supply/demand
+  // chart merge them. Either source may be empty; renderers handle null/undefined.
+  const [globalData, omrBody] = await Promise.all([
+    fetch('/api/global?months=24').then(r => r.json()),
+    fetch('/api/omr').then(r => r.json()),
+  ]);
+  renderGlobalSub(omrBody);
+  renderGlobalStats(globalData, omrBody);
   if (globalData.length > 0) {
-    renderGlobalStats(globalData);
     renderOecdChart(globalData);
-    renderSupplyDemandChart(globalData);
     renderInvChangeChart(globalData);
   }
+  renderBalanceChart(globalData, omrBody);
 
   await renderShipMap();
+  await renderFloatingStorage();
 
   const last = rawData[rawData.length - 1];
   document.getElementById('footNote').textContent =

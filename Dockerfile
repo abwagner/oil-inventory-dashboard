@@ -17,10 +17,14 @@
 FROM python:3.12-slim
 
 # rasterio's manylinux wheel bundles GDAL — no system gdal package required.
-# Just ca-certificates (HTTPS to API providers) and tzdata (cron-style schedules).
+# ca-certificates: HTTPS to API providers.
+# tzdata: cron-style schedules.
+# poppler-utils: provides `pdftotext`, used by pipelines/omr.py to parse the
+#   monthly IEA OMR PDF.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         tzdata \
+        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

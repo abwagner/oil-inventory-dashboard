@@ -95,12 +95,22 @@ class CensusState:
             stype = ssd.get("Type")
             if isinstance(stype, int):
                 self.mmsi_ship_types[mmsi] = stype
+            # AIS Type 5 dimensions: A=bow, B=stern, C=port, D=starboard.
+            # Length = A+B, beam = C+D. aisstream serializes as `Dimension`
+            # object; fall back to flat keys if a future API rev flattens.
+            dim = ssd.get("Dimension") or {}
+            dim_a = dim.get("A") if isinstance(dim, dict) else ssd.get("DimensionA")
+            dim_b = dim.get("B") if isinstance(dim, dict) else ssd.get("DimensionB")
+            dim_c = dim.get("C") if isinstance(dim, dict) else ssd.get("DimensionC")
+            dim_d = dim.get("D") if isinstance(dim, dict) else ssd.get("DimensionD")
             self.mmsi_static[mmsi] = {
                 "name": ssd.get("Name") or metadata.get("ShipName"),
                 "imo": ssd.get("ImoNumber"),
                 "callsign": ssd.get("CallSign"),
                 "destination": ssd.get("Destination"),
                 "max_draught_m": ssd.get("MaximumStaticDraught"),
+                "length_m": (dim_a + dim_b) if (dim_a and dim_b) else None,
+                "beam_m": (dim_c + dim_d) if (dim_c and dim_d) else None,
             }
         elif mtype == "PositionReport":
             self.mmsi_position_counts[mmsi] += 1
@@ -176,6 +186,8 @@ def write_summary(
             "callsign": st.get("callsign"),
             "destination": st.get("destination"),
             "max_draught_m": st.get("max_draught_m"),
+            "length_m": st.get("length_m"),
+            "beam_m": st.get("beam_m"),
             "position_reports": int(state.mmsi_position_counts.get(m, 0)),
         })
 
