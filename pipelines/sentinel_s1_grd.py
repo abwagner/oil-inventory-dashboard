@@ -121,14 +121,17 @@ def _canonical_acquisition_key(name: str) -> str:
 def search_scenes(
     bbox: tuple[float, float, float, float],
     start: str, end: str, token: str,
-    top: int = 50,
+    page_size: int = 500,
+    max_pages: int = 20,
     prefer_cog: bool = True,
 ) -> list[SceneMeta]:
     """OData search for S1 IW GRD products intersecting `bbox` in [start, end).
 
-    `start` and `end` are ISO timestamps (Z-suffixed UTC). `top` caps the
-    result set — Sentinel-1 has 6-day revisit at most AOIs so a 14-day
-    window typically yields <20 scenes per AOI.
+    `start` and `end` are ISO timestamps (Z-suffixed UTC). Paginates via
+    `$skip` so the result set is bounded by `page_size * max_pages` rather
+    than a single page. Dense AOIs over a long backfill window can return
+    hundreds of raw products (each acquisition has a COG + legacy variant),
+    so a single 50-row page silently truncates the oldest dates.
 
     DESP returns both COG and legacy variants of each acquisition; with
     `prefer_cog=True` (default) we keep one per acquisition, COG-favored
@@ -143,22 +146,33 @@ def search_scenes(
         f"ContentDate/Start gt {start}",
         f"ContentDate/Start lt {end}",
     ])
-    url = (
-        f"{CATALOG_URL}?$filter={quote(filter_clauses)}"
-        f"&$orderby=ContentDate/Start desc&$top={top}"
-    )
-    r = requests.get(
-        url, headers={"Authorization": f"Bearer {token}"},
-        timeout=DEFAULT_TIMEOUT,
-    )
-    r.raise_for_status()
     raw: list[SceneMeta] = []
-    for p in r.json().get("value", []):
-        raw.append(SceneMeta(
-            id=p["Id"], name=p["Name"],
-            content_length=int(p.get("ContentLength") or 0),
-            start_time=p["ContentDate"]["Start"],
-        ))
+    for page in range(max_pages):
+        skip = page * page_size
+        url = (
+            f"{CATALOG_URL}?$filter={quote(filter_clauses)}"
+            f"&$orderby=ContentDate/Start desc"
+            f"&$top={page_size}&$skip={skip}"
+        )
+        r = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"},
+            timeout=DEFAULT_TIMEOUT,
+        )
+        r.raise_for_status()
+        page_results = r.json().get("value", [])
+        for p in page_results:
+            raw.append(SceneMeta(
+                id=p["Id"], name=p["Name"],
+                content_length=int(p.get("ContentLength") or 0),
+                start_time=p["ContentDate"]["Start"],
+            ))
+        if len(page_results) < page_size:
+            break
+    else:
+        log.warning("catalog_search_max_pages_reached",
+                    pages=max_pages, page_size=page_size,
+                    total=len(raw),
+                    msg="hit max_pages; raise max_pages if larger windows needed")
     if not prefer_cog:
         return raw
 
@@ -227,9 +241,12 @@ def download_product(
     scene: SceneMeta, dest_path: Path, token: str,
     chunk_bytes: int = CHUNK_BYTES,
     max_retries: int = MAX_DOWNLOAD_RETRIES,
-) -> Path:
+) -> tuple[Path, str]:
     """Download `scene` to `dest_path` (~1-2 GB). Streams in chunks; resumes
     via HTTP Range on partial files; retries 5xx with exponential backoff.
+    Refreshes the CDSE access token on 401 (the ~10-min token lifetime can
+    expire mid-run on dense AOIs); returns the current token so the caller
+    can avoid an immediate re-401 on the next scene.
 
     Validates ZIP magic bytes on completion before returning.
     """
@@ -247,10 +264,15 @@ def download_product(
                  resume_from=existing, expected_total=scene.content_length)
         try:
             r = _follow_download_redirects(url, token, headers, timeout=DEFAULT_TIMEOUT)
+            if r.status_code == 401 and attempt < max_retries:
+                log.info("token_expired_refresh",
+                         scene=scene.scene_id, attempt=attempt)
+                token = get_access_token()
+                continue
             if r.status_code not in (200, 206):
                 log.warning("download_status_unexpected",
                             scene=scene.scene_id, status=r.status_code)
-                # Retry on 5xx; bail on 4xx
+                # Retry on 5xx; bail on remaining 4xx
                 if 500 <= r.status_code < 600 and attempt < max_retries:
                     time.sleep(2 ** attempt)
                     continue
@@ -276,7 +298,7 @@ def download_product(
         raise RuntimeError(
             f"Downloaded {dest_path} has bad ZIP magic bytes {magic!r}; expected PK\\x03\\x04"
         )
-    return dest_path
+    return dest_path, token
 
 
 # ─── OID-6: Calibrate + reproject + tile ─────────────────────────────────
@@ -434,7 +456,7 @@ def ingest_aoi(
     for s in scenes:
         try:
             zip_path = staging_dir / f"{s.scene_id}.SAFE.zip"
-            download_product(s, zip_path, token)
+            _, token = download_product(s, zip_path, token)
             stats["downloaded"] += 1
             scene_dir = output_root / aoi_name / s.date_dir / s.scene_id
             process_scene(zip_path, bbox, target_size, scene_dir, s,
