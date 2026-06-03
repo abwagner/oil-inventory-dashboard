@@ -651,3 +651,97 @@ This question is now sharpest for AIS (§4.2.1): the chosen feed, aisstream.io, 
 - **Paid global AIS history** (Spire, MarineTraffic, VT Explorer, equivalents). Buys immediate global backtest depth at significant one-time cost. Worth it only if backtested tanker accuracy is the binding constraint on operator trust.
 
 The recommended default is to wait through Phase 0/1 of AIS ingestion, evaluate live forecast performance against realized rates for at least one quarter, and only then revisit the paid-history decision with concrete evidence of where the model is weak.
+
+## 12. Oil-on-Water Aggregation and Regional Flow Signals
+
+This section was added after the v0 dashboard shipped its "positions-only" tanker view (§9.7) — it specifies how that view evolves into a *balance of crude oil in transit by sea*, plus regional flow signals derived from AIS and qualitative SAR signals that don't require vessel identity.
+
+### 12.1 Phase 1 (shipped) — per-vessel barrels estimate + global aggregate
+
+**Per-vessel barrels.** For each AIS-visible tanker we estimate barrels on board as `class_capacity_bbl × clamped_laden_ratio`:
+
+- **Class** is inferred from AIS-broadcast length (`dim_to_bow + dim_to_stern`) with beam as a tiebreaker. Boundaries:
+  - VLCC: 290–360 m (beam ≥ 40 m required)
+  - Suezmax: 265–289 m (beam ≥ 35 m required)
+  - Aframax: 240–264 m
+  - Panamax: 200–239 m
+  - Handysize: 160–199 m
+  - <160 m: not a crude carrier in any meaningful trade-flow sense; skip.
+- **Class capacity** is nominal deadweight in barrels: VLCC 2.0M, Suezmax 1.0M, Aframax 0.7M, Panamax 0.5M, Handysize 0.3M. Real per-vessel deadweight spreads ±20% within a class; we accept that since the headline aggregate is directional.
+- **Laden ratio** = `current_draught / design_draught`, clamped to `[0.4, 1.0]`. The clamp bounds damage from stale or spoofed draught reports (§9.7). When draught data is missing — the common case, since AIS PRs don't repeat draught and only `MaximumStaticDraught` arrives via static data — we default to **0.6** (rough fleet-average over a transit cycle).
+
+The implementation lives in [`pipelines/_tanker_class.py`](../pipelines/_tanker_class.py). Functions: `classify`, `capacity_bbl`, `laden_ratio`, `barrels_estimate`.
+
+**Aggregate "crude on water".** [`/api/ships`](../app.py) now returns an `oil_on_water` block summing `barrels_estimate` across the AIS-visible fleet, broken down by class. The headline number is biased toward whatever geographic regions AIS captures (per §4.2.1.1: heavy NW Europe, sparse Persian Gulf / Red Sea). The endpoint surfaces this via a `caveat` string returned in-band, and the dashboard's tanker-section subtitle leads with the coverage warning. The aggregate is **directional, not authoritative** — it tracks change over time against itself, not against a published "oil in transit" benchmark.
+
+**Position-staleness filter.** `/api/ships` drops reports older than 7 days from the snapshot's most-recent observation by default (override via `?stale_days=N`). This implements the recommendation in §4.2.1.1 and prevents long-stale rows from inflating the aggregate.
+
+**Honest gaps in Phase 1:**
+- AIS PRs broadcast `MaximumStaticDraught` only — not *current* draught. So laden vs ballast classification per vessel is not yet meaningful; the dashboard's laden/ballast split rolls everything with-draught into "laden-leaning" as a stub. Resolving this requires either operator-supplied port-call telemetry or a per-voyage track-segmentation pass over the snapshot history.
+- The 0.6 default laden ratio is a fleet-average; it doesn't reflect actual cargo state. The aggregate is correct on average, wrong on every individual.
+- We don't classify origin / destination at the basin level. Phase 2 (§12.2) addresses this.
+
+### 12.2 Phase 2 (designed, not yet implemented) — basin polygons + regional flows
+
+**Basin polygons.** A new `pipelines/_basins.py` carries named GeoJSON-style polygons for the major loading/unloading basins:
+
+| Basin | Role | Notes |
+|---|---|---|
+| Persian Gulf | loading | TD3C origin; AIS coverage thin (§4.2.1.1) |
+| Red Sea / Suez | chokepoint | transit-only |
+| West Africa | loading | TD15 origin |
+| North Sea / Baltic | mixed | NW Europe AIS-rich |
+| USGC | loading | TD22 origin; AIS-rich |
+| Caribbean | mixed | refining + transshipment |
+| Singapore Strait | chokepoint + storage | persistent anchorage hotspot |
+| Yellow Sea / Sea of Japan | unloading | TD3C / TD22 destination |
+| NW Europe | unloading | TD15 destination |
+
+`current_basin(lat, lon) → basin_name | None` is a point-in-polygon lookup. For "destination," the AIS free-text `destination` field is mapped to a basin via fuzzy port-name match (manually curated alias table). The destination signal is noisy per §9.7 — document the limit, surface confidence.
+
+**Flow endpoint.** `/api/oil_flows` returns:
+
+```json
+{
+  "by_basin": {
+    "Persian Gulf": { "vessels_present": 41, "barrels_present": 38_500_000 },
+    ...
+  },
+  "flows": [
+    { "origin": "Persian Gulf", "destination": "Yellow Sea", "vessels": 18, "barrels": 21_000_000 },
+    ...
+  ]
+}
+```
+
+Dashboard: a small origin→destination table (or simple Sankey) under the tanker map. Same coverage caveat applies — destinations are operator-entered and the Persian Gulf is under-represented at source.
+
+### 12.3 Phase 3 (designed, not yet implemented) — SAR signals without vessel identity
+
+At 88 m/px, SAR cannot distinguish VLCC from Suezmax (both ≤4 pixels). But two signals are derivable from cluster persistence alone, no identity needed:
+
+- **Floating-storage trend.** Rolling 14-day count of persistent (≥3-scene) over-water clusters at named terminal hotspots: Ras Tanura, Kharg Island, LOOP, Houston Ship Channel, Singapore. The actionable signal is week-over-week change; absolute count varies with Sentinel-1 revisit cadence. Endpoint `/api/sar_floating_storage`. Dashboard: a single-line trend chart per terminal.
+- **Anchorage density grid.** 0.5° grid of persistent-cluster density. Endpoint `/api/sar_anchorages`. Dashboard: heatmap overlay on the existing tanker map (toggleable layer), or a summary table per major terminal.
+
+Both signals lean on `clusters.parquet`'s existing `is_persistent` flag (set by `sar_aggregate.py` when `n_scenes ≥ 3`). No new SAR ingest needed.
+
+### 12.4 Phase 4 (designed, not yet implemented) — SAR-AIS fusion (dark-fleet inference)
+
+This is the v1 Phase 2 work flagged in §4.2.2. For each SAR cluster centroid, search the AIS snapshot for any vessel within ±15 minutes and ±2 km. Clusters with no match are *candidate* dark-fleet observations. Alternative explanations are real and material (AIS dropouts, non-tanker vessels, SAR false positives), so the metric is an **upper bound**, not a count.
+
+Endpoint `/api/dark_fleet_candidates` returns: per AOI per week, candidate count and the previous-week delta. Dashboard treatment: a single stat card next to the floating-storage card; not a chart.
+
+### 12.5 Phase 5 (deferred, gated on cost-benefit) — Higher-resolution SAR
+
+Per the open question at §11 ("SAR ship detection method"), Phase 0 should test 20–30 m/px over one AOI to see if VLCC vs Suezmax becomes distinguishable. PU cost rises ~10× (TDD §4.2.2.1) so the bar is high: only pursue if a single class-resolved signal — e.g., "VLCCs anchored at Kharg" — is meaningfully more actionable than the class-blind anchorage count from Phase 3.
+
+### 12.6 Combined dashboard view (target state, post Phase 1-4)
+
+After Phases 1-4 ship, the Tanker Positions section becomes:
+
+- **Stat row** (≤6 cards): Crude on water (Mbbl) · Laden / Ballast split · Top class · SAR anchorages (count, w/w Δ) · Floating storage at Singapore (count, w/w Δ) · Dark-fleet candidates (count, w/w Δ)
+- **Map** (existing): AIS dots colored by ship type + SAR transient clusters + optional anchorage heatmap layer
+- **Flow table** (new): origin basin → destination basin barrels (Phase 2)
+- **Coverage banner** (existing, expanded): the AIS+SAR caveat text from `/api/ships`
+
+The directionality remains: nothing here is an authoritative barrel count. The value is **week-over-week change against the dashboard's own history** — leading indicators of supply pressure, floating storage build-up, and sanctions-evading flow shifts.

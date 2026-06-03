@@ -12,6 +12,8 @@
 #     "requests>=2.28",
 #     "structlog>=24.0",
 #     "python-dotenv>=1.0",
+#     "s3fs>=2024.1",
+#     "curl-cffi>=0.7",
 # ]
 # ///
 """
@@ -54,6 +56,7 @@ from _env import (  # noqa: E402
 )
 load_repo_env()
 import steo  # noqa: E402
+import omr  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -206,10 +209,30 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        -- Weekly snapshots of SAR floating-storage counts per terminal.
+        -- One row per (observed_at, terminal_name). observed_at is the date
+        -- portion of the latest SAR cluster observation across all AOIs at
+        -- the time the snapshot was taken — i.e. the "as_of" of /api/sar_
+        -- floating_storage. The PK ensures repeated calls within a single
+        -- observation window upsert rather than duplicate.
+        CREATE TABLE IF NOT EXISTS sar_floating_storage_history (
+            observed_at      TEXT NOT NULL,
+            terminal_name    TEXT NOT NULL,
+            persistent_count INTEGER,
+            mean_sigma0_db   REAL,
+            PRIMARY KEY (observed_at, terminal_name)
+        );
         CREATE INDEX IF NOT EXISTS idx_eia_series_date ON eia_weekly(series_id, date);
         CREATE INDEX IF NOT EXISTS idx_steo_series_date ON steo_monthly(series_id, date);
+        CREATE INDEX IF NOT EXISTS idx_sar_fs_observed_at
+            ON sar_floating_storage_history(observed_at);
+        CREATE INDEX IF NOT EXISTS idx_sar_fs_terminal
+            ON sar_floating_storage_history(terminal_name);
     """
     )
+    # OMR schema lives alongside in the same DB. The pipeline owns its CREATE
+    # statements so the CLI works standalone too (--db-path foo.db).
+    omr.ensure_schema(conn)
     conn.close()
 
 
@@ -302,6 +325,40 @@ async def refresh_all():
     conn.commit()
     conn.close()
     logger.info("Refresh complete")
+
+
+def refresh_omr(conn: sqlite3.Connection) -> dict:
+    """Pull the latest free IEA OMR PDF, parse Tables 1/1a/1b, and upsert.
+
+    Discovery walks back through the last few monthly report pages for the blob
+    URL; OMR_PDF_URL overrides for explicit issues (subscriber URLs or specific
+    archived editions). Returns a small dict so the ingest tracker has a result
+    to surface; raises RuntimeError on hard failure (no URL, no records).
+    """
+    url = os.environ.get("OMR_PDF_URL") or omr.find_latest_pdf_url()
+    if not url:
+        # iea.org has Cloudflare bot detection so auto-discovery often 403s
+        # from non-browser clients. The fix is to set OMR_PDF_URL once a month
+        # — find the link on the report page (manually) and paste it in.
+        raise RuntimeError(
+            "no OMR PDF URL — auto-discovery hit iea.org bot protection; "
+            "set OMR_PDF_URL to the blob URL from the latest "
+            "iea.org/reports/oil-market-report-<month>-<year> page"
+        )
+    pdf_bytes = omr.download_pdf(url)
+    report_date = (
+        omr.report_date_from_url(url)
+        or omr.report_date_from_pdf_meta(pdf_bytes)
+        or datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    )
+    text = omr.pdf_to_text(pdf_bytes)
+    records = omr.parse_tables(text)
+    if not records:
+        raise RuntimeError(f"OMR parser produced 0 records from {url} — PDF layout may have changed")
+    n = omr.upsert_records(conn, report_date, records)
+    conn.commit()
+    logger.info(f"OMR refresh: {n} rows from {url} report_date={report_date}")
+    return {"records": n, "report_date": report_date, "url": url}
 
 
 def fetch_steo(conn: sqlite3.Connection):
@@ -503,6 +560,68 @@ async def get_global(months: int = Query(default=24, ge=6, le=72)):
     return JSONResponse(data)
 
 
+def _period_sort_key(period: str) -> tuple[int, int]:
+    """Order periods chronologically with annual rolling up after Q4 of its year."""
+    if "Q" in period:
+        q, yr = period.split("Q")
+        return (2000 + int(yr), int(q))
+    return (int(period), 5)
+
+
+# Headline rows from the OMR we expose on the dashboard. Section disambiguates
+# rows that share a label (e.g. 'Total OECD' in DEMAND vs SUPPLY).
+#
+# total_supply sources from Table 1b ("World Oil Production w/ OPEC+ current
+# agreement") instead of Table 1 — Table 1 leaves OPEC supply blank past the
+# current quarter (IEA's forecasting policy), but Table 1b extends supply
+# forward by assuming OPEC+ adheres to its published quotas, giving us a full
+# 12-quarter line for charting.
+_OMR_HEADLINE_ROWS: dict[str, tuple[str, str, str]] = {
+    "total_demand":     ("1",  "NON-OECD DEMAND", "Total Demand"),
+    "total_supply":     ("1b", "OPEC+ CRUDE",     "Total Supply"),
+}
+
+
+@app.get("/api/omr")
+async def get_omr():
+    """Return latest OMR issue's headline series: World demand/supply balance,
+    stock changes, and the Call-on-OPEC residual. Each series is the per-period
+    (quarterly + annual) values from Table 1 of the most recent ingested issue.
+
+    Response shape:
+        {
+            "report_date": "YYYY-MM-DD",
+            "series": {
+                "total_demand":   [{period, period_type, value}, ...],
+                "total_supply":   [...],
+                ...
+            }
+        }
+    """
+    conn = get_db()
+    rs = conn.execute("SELECT MAX(report_date) FROM omr_monthly").fetchone()
+    report_date = rs[0] if rs else None
+    if not report_date:
+        conn.close()
+        return JSONResponse({"report_date": None, "series": {}})
+
+    series: dict[str, list[dict]] = {}
+    for key, (table, section, row_label) in _OMR_HEADLINE_ROWS.items():
+        rows = conn.execute(
+            "SELECT period, period_type, value FROM omr_monthly "
+            "WHERE report_date=? AND table_id=? AND section=? AND row_label=?",
+            (report_date, table, section, row_label),
+        ).fetchall()
+        series[key] = sorted(
+            [{"period": r["period"], "period_type": r["period_type"],
+              "value": round(r["value"], 2) if r["value"] is not None else None}
+             for r in rows],
+            key=lambda r: _period_sort_key(r["period"]),
+        )
+    conn.close()
+    return JSONResponse({"report_date": report_date, "series": series})
+
+
 @app.get("/api/regional")
 async def get_regional():
     """Return latest PADD-level crude stocks plus WoW and YoY deltas."""
@@ -553,12 +672,30 @@ def _iso_minus_days(date_str: str, days: int) -> str:
     return (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
+import _tanker_class  # noqa: E402  (pipelines/_tanker_class.py — capacity + classifier)
+
+
+_OIL_ON_WATER_CAVEAT = (
+    "AIS coverage is uneven — heavy in NW Europe (~46%), sparse in Persian "
+    "Gulf, Red Sea, West Africa (TDD §4.2.1.1). Total represents AIS-visible "
+    "tankers only; the unobserved fleet (TDD §9.2) is not included. "
+    "Per-vessel barrels = nominal class deadweight × clamped draught:design "
+    "ratio (TDD §9.7 on draught reliability)."
+)
+
+
 @app.get("/api/ships")
-async def get_ships():
+async def get_ships(stale_days: int = Query(default=7, ge=1, le=30)):
     """Latest tanker positions from the most recent AIS snapshot.
 
-    Positions only — no load state, voyage intent, or identity verification.
-    See WTI_Tanker_Forecast_TDD.md §9.7.
+    Each ship record carries an estimated tanker class + barrels-on-board
+    figure derived from AIS-broadcast dimensions and draught. The top-level
+    `oil_on_water` block aggregates these. Per TDD §9.7: AIS provides only
+    self-declared identifiers and position — load state is inferred from
+    draught and is noisy, especially for the dark fleet.
+
+    Stale reports (older than `stale_days`, default 7) are dropped per TDD
+    §4.2.1.1; override the threshold with `?stale_days=N`.
     """
     snapshot_uri = resolve_tanker_snapshot()
     fs = storage_fs()
@@ -569,7 +706,52 @@ async def get_ships():
     df = pd.read_parquet(snapshot_uri)
     snap_at = df["time_utc"].max() if not df.empty else None
 
-    cols = ["mmsi", "name", "ship_type", "latitude", "longitude", "sog", "destination"]
+    # Position-staleness filter — drop reports older than `stale_days` from
+    # the snapshot's most-recent observation. Per-row comparison (not vs. now)
+    # so an old snapshot doesn't filter out all of itself. aisstream serializes
+    # timestamps as `2026-05-15 10:00:00.123 +0000 UTC` — the trailing ' UTC'
+    # duplicates the offset and confuses pandas; strip it before parsing.
+    def _parse_ais_ts(s):
+        if s is None:
+            return pd.NaT
+        s = str(s).replace(" UTC", "").strip()
+        return pd.to_datetime(s, errors="coerce", utc=True)
+
+    if not df.empty and snap_at:
+        cutoff = _parse_ais_ts(snap_at) - pd.Timedelta(days=stale_days)
+        if pd.notna(cutoff):
+            ts = df["time_utc"].apply(_parse_ais_ts)
+            df = df[(ts.isna()) | (ts >= cutoff)].copy()
+
+    # Optional fields that older snapshots may not carry. Tolerate their
+    # absence by defaulting to None columns.
+    for opt_col in ("length_m", "beam_m", "max_draught_m", "cog",
+                    "nav_status", "true_heading"):
+        if opt_col not in df.columns:
+            df[opt_col] = None
+
+    # Compute per-vessel barrels estimate + class.
+    classes: list[str | None] = []
+    barrels: list[int] = []
+    for _, r in df.iterrows():
+        b, c = _tanker_class.barrels_estimate(
+            r.get("length_m"), r.get("beam_m"),
+            None,                     # current draught: not in AIS PR; AIS
+                                      # broadcasts MaximumStaticDraught only.
+                                      # Until current draught is wired in, the
+                                      # estimate uses the laden_ratio default.
+            r.get("max_draught_m"),
+        )
+        classes.append(c)
+        barrels.append(b)
+    df = df.assign(tanker_class=classes, barrels_estimate=barrels)
+
+    cols = [
+        "mmsi", "name", "ship_type", "latitude", "longitude", "sog", "cog",
+        "true_heading", "nav_status", "time_utc", "destination",
+        "max_draught_m", "length_m", "beam_m",
+        "tanker_class", "barrels_estimate",
+    ]
     records = df[cols].to_dict(orient="records")
     for r in records:
         for k, v in list(r.items()):
@@ -578,7 +760,51 @@ async def get_ships():
             elif hasattr(v, "item"):  # numpy scalars
                 r[k] = v.item()
 
-    return JSONResponse({"snapshot_at": snap_at, "total": len(records), "ships": records})
+    # Aggregate "crude on water" — directional, biased toward AIS-visible fleet.
+    classified_mask = df["tanker_class"].notna()
+    classified = df[classified_mask]
+    total_bbl = int(classified["barrels_estimate"].sum())
+    by_class: dict[str, dict] = {}
+    for cls, grp in classified.groupby("tanker_class"):
+        by_class[str(cls)] = {
+            "n": int(len(grp)),
+            "bbl": int(grp["barrels_estimate"].sum()),
+        }
+    # Rough laden/ballast split using draught reports where present. When
+    # draught is missing we land in the default ratio (0.6) which doesn't tell
+    # us laden vs. ballast — those vessels go in `unknown_state_bbl`.
+    laden_bbl = ballast_bbl = unknown_state_bbl = 0
+    for _, r in classified.iterrows():
+        d = r.get("max_draught_m")
+        # AIS doesn't broadcast current draught on PRs, so without a separate
+        # signal everyone falls into 'unknown'. Reserved for when we wire in
+        # current draught (Type-1 PR extension or per-port deepening checks).
+        if d is None or pd.isna(d):
+            unknown_state_bbl += r["barrels_estimate"]
+        else:
+            # Stub: treat draught presence as "laden-leaning" and absence as
+            # ballast-leaning; this will be replaced when current draught
+            # wiring lands.
+            laden_bbl += r["barrels_estimate"]
+
+    oil_on_water = {
+        "total_bbl": total_bbl,
+        "laden_bbl": int(laden_bbl),
+        "ballast_bbl": int(ballast_bbl),
+        "unknown_state_bbl": int(unknown_state_bbl),
+        "by_class": by_class,
+        "n_classified": int(classified_mask.sum()),
+        "n_unclassified": int(len(df) - classified_mask.sum()),
+        "stale_days_filter": stale_days,
+        "caveat": _OIL_ON_WATER_CAVEAT,
+    }
+
+    return JSONResponse({
+        "snapshot_at": snap_at,
+        "total": len(records),
+        "oil_on_water": oil_on_water,
+        "ships": records,
+    })
 
 
 @app.get("/api/sar_detections")
@@ -644,6 +870,216 @@ async def get_sar_detections():
     })
 
 
+import _terminals  # noqa: E402  pipelines/_terminals.py — terminal hotspots + haversine
+
+
+def _load_persistent_water_clusters() -> tuple[pd.DataFrame, str | None]:
+    """Return DataFrame of persistent, over-water SAR clusters across all AOIs.
+
+    Columns: aoi, lat, lon, n_scenes, n_detections, sigma0_max_db, first_seen,
+    last_seen. The persistent-and-not-on-land filter is applied here so the
+    callers (`/api/sar_floating_storage`, `/api/sar_anchorages`) don't each
+    re-implement it. Returns (df, last_seen_global) where last_seen_global is
+    the most recent cluster observation across all AOIs (for "as of" display).
+    """
+    sar_root = data_uri("sentinel_sar")
+    fs = storage_fs()
+    if not fs.exists(sar_root):
+        return pd.DataFrame(), None
+
+    frames: list[pd.DataFrame] = []
+    last_seen_global: str | None = None
+    for aoi_uri in sorted(_list_aoi_dirs(fs, sar_root)):
+        aoi_name = aoi_uri.rstrip("/").rsplit("/", 1)[-1]
+        clusters_uri = data_uri("sentinel_sar", aoi_name, "clusters.parquet")
+        if not fs.exists(clusters_uri):
+            continue
+        df = pd.read_parquet(clusters_uri)
+        if df.empty:
+            continue
+        for c in ("lat", "lon", "sigma0_max_db", "n_scenes", "n_detections"):
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        for c in ("is_persistent", "any_on_land"):
+            if c in df.columns:
+                df[c] = df[c].astype(bool)
+        kept = df[df["is_persistent"] & (~df["any_on_land"])].copy()
+        if kept.empty:
+            continue
+        kept["aoi"] = aoi_name
+        # Track latest observation timestamp globally
+        if "last_seen" in kept.columns:
+            ls = str(kept["last_seen"].max())
+            if ls and (last_seen_global is None or ls > last_seen_global):
+                last_seen_global = ls
+        frames.append(kept)
+
+    if not frames:
+        return pd.DataFrame(), last_seen_global
+    return pd.concat(frames, ignore_index=True), last_seen_global
+
+
+def _snapshot_floating_storage(
+    conn: sqlite3.Connection, observed_at: str, terminals: list[dict],
+) -> int:
+    """Upsert per-terminal counts into the history table. Idempotent on
+    (observed_at, terminal_name) so repeated calls within the same SAR
+    observation window don't multiply rows. Returns row count inserted/
+    replaced."""
+    rows = [
+        (observed_at, t["name"], t["persistent_count"], t.get("mean_sigma0_db"))
+        for t in terminals
+    ]
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT OR REPLACE INTO sar_floating_storage_history "
+        "(observed_at, terminal_name, persistent_count, mean_sigma0_db) "
+        "VALUES (?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def _floating_storage_history(
+    conn: sqlite3.Connection, days: int,
+) -> dict[str, list[dict]]:
+    """Read per-terminal history for the last `days` days. Returns a dict
+    keyed by terminal_name; each value is an ordered list of {observed_at,
+    count, sigma0} oldest-first."""
+    cutoff = (datetime.now(tz=timezone.utc).date() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT observed_at, terminal_name, persistent_count, mean_sigma0_db "
+        "FROM sar_floating_storage_history WHERE observed_at >= ? "
+        "ORDER BY terminal_name, observed_at",
+        (cutoff,),
+    ).fetchall()
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["terminal_name"], []).append({
+            "observed_at": r["observed_at"],
+            "persistent_count": r["persistent_count"],
+            "mean_sigma0_db": r["mean_sigma0_db"],
+        })
+    return out
+
+
+@app.get("/api/sar_floating_storage")
+async def get_sar_floating_storage(history_days: int = Query(default=120, ge=14, le=730)):
+    """Count of persistent (>=3-scene) over-water SAR clusters near each
+    named terminal hotspot. A high count at e.g. Singapore Eastern OPL
+    implies floating-storage build-up (anchored tankers used as
+    contango-trade storage).
+
+    Each call snapshots the current counts into `sar_floating_storage_history`
+    keyed on (observed_at, terminal_name) — idempotent within a single SAR
+    observation window. As the weekly SAR cron progresses, history
+    accumulates and the response's per-terminal `history` array grows.
+
+    Methodology per TDD §12.3: persistent clusters within each terminal's
+    radius are counted. Caveats:
+      - SAR at ~120 m/px can't distinguish VLCC from Suezmax, so this is
+        a vessel COUNT, not a volume estimate.
+      - Persistent ≥3 scenes filter catches vessels visible across at least
+        ~9 days; quick port calls aren't included.
+      - Coverage is limited to configured AOIs (see scheduler.AOIS).
+        Terminals in unconfigured regions will report 0 erroneously.
+    """
+    df, last_seen = _load_persistent_water_clusters()
+    out: list[dict] = []
+    for term in _terminals.iter_terminals():
+        if df.empty:
+            count = 0
+            mean_sigma0 = None
+        else:
+            # Vectorised haversine across the cluster set
+            import numpy as np
+            lat1 = math.radians(term["lat"])
+            lat2 = np.radians(df["lat"].to_numpy())
+            dlat = lat2 - lat1
+            dlon = np.radians(df["lon"].to_numpy() - term["lon"])
+            a = (np.sin(dlat / 2) ** 2
+                 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2)
+            dist_km = 2 * 6371.0 * np.arcsin(np.sqrt(a))
+            mask = dist_km <= term["radius_km"]
+            count = int(mask.sum())
+            mean_sigma0 = (float(df.loc[mask, "sigma0_max_db"].mean())
+                           if count and "sigma0_max_db" in df.columns else None)
+        out.append({
+            **term,
+            "persistent_count": count,
+            "mean_sigma0_db": (round(mean_sigma0, 1) if mean_sigma0 is not None else None),
+        })
+
+    # Accumulate weekly snapshots. observed_at is the date portion of the
+    # latest SAR cluster timestamp (the data's "as of"), not now() — keeps
+    # the time series tied to data freshness rather than view freshness.
+    observed_at: str | None = None
+    if last_seen:
+        # last_seen is e.g. "2026-05-14T00:26:54Z" — take date portion.
+        observed_at = str(last_seen)[:10]
+        try:
+            conn = get_db()
+            _snapshot_floating_storage(conn, observed_at, out)
+            history = _floating_storage_history(conn, history_days)
+        finally:
+            conn.close()
+        # Attach per-terminal history (oldest-first) to each terminal record.
+        for term in out:
+            term["history"] = history.get(term["name"], [])
+
+    return JSONResponse({
+        "as_of": last_seen,
+        "observed_at": observed_at,
+        "terminals": out,
+        "methodology": (
+            "Counts persistent (>=3-scene) over-water SAR clusters within each "
+            "terminal's radius. Vessel count, not volume — SAR at ~120 m/px "
+            "cannot distinguish tanker class. Each call snapshots into "
+            "sar_floating_storage_history; week-over-week change in `history` "
+            "is the actionable signal. See TDD §12.3."
+        ),
+    })
+
+
+@app.get("/api/sar_anchorages")
+async def get_sar_anchorages(grid_deg: float = Query(default=0.5, ge=0.1, le=2.0)):
+    """0.5°-grid density of persistent over-water SAR clusters.
+
+    Useful for spotting anchorage hotspots that ISN'T at a named terminal
+    (e.g. growth at an unmapped STS zone). Per TDD §12.3; the actionable
+    view is week-over-week change at named terminals (Phase 3b — not yet
+    accumulated). For now this is a snapshot heatmap source.
+    """
+    df, last_seen = _load_persistent_water_clusters()
+    cells: list[dict] = []
+    if not df.empty:
+        # Bin to grid cells (floor to the grid_deg multiple)
+        df["lat_bin"] = (df["lat"] / grid_deg).apply(math.floor) * grid_deg
+        df["lon_bin"] = (df["lon"] / grid_deg).apply(math.floor) * grid_deg
+        grouped = df.groupby(["lat_bin", "lon_bin"], as_index=False).agg(
+            count=("lat", "size"),
+            mean_sigma0_db=("sigma0_max_db", "mean"),
+        )
+        # Sort by density descending — most actionable first
+        grouped = grouped.sort_values("count", ascending=False)
+        for _, r in grouped.iterrows():
+            cells.append({
+                "lat_bin": float(r["lat_bin"]),
+                "lon_bin": float(r["lon_bin"]),
+                "count": int(r["count"]),
+                "mean_sigma0_db": round(float(r["mean_sigma0_db"]), 1)
+                                  if not pd.isna(r["mean_sigma0_db"]) else None,
+            })
+
+    return JSONResponse({
+        "as_of": last_seen,
+        "grid_deg": grid_deg,
+        "cells": cells,
+    })
+
+
 @app.get("/api/status")
 async def status():
     """Health snapshot — used by the empty-state UI to decide what's missing.
@@ -681,8 +1117,24 @@ async def status():
             "rows": steo_row["n"],
             "latest": steo_row["latest"],
         },
+        "omr": _omr_status(),
         "ais": _ais_status(),
         "sar": _sar_status(),
+    }
+
+
+def _omr_status() -> dict:
+    conn = get_db()
+    rs = conn.execute(
+        "SELECT MAX(report_date) AS latest, COUNT(DISTINCT report_date) AS issues, "
+        "COUNT(*) AS total_rows FROM omr_monthly"
+    ).fetchone()
+    conn.close()
+    return {
+        "latest_report": rs["latest"],
+        "issues": rs["issues"] or 0,
+        "total_rows": rs["total_rows"] or 0,
+        "ingest": INGEST_STATE["omr"],
     }
 
 
@@ -699,7 +1151,7 @@ async def status():
 # trigger; if both fire, you get a duplicate run (rare and idempotent on disk).
 # ---------------------------------------------------------------------------
 
-INGEST_PIPELINES = ("eia", "ais", "ais-census", "sar")
+INGEST_PIPELINES = ("eia", "omr", "ais", "ais-census", "sar")
 INGEST_STATE: dict[str, dict] = {p: {"status": "idle"} for p in INGEST_PIPELINES}
 
 
@@ -849,6 +1301,28 @@ async def ingest_eia():
         return JSONResponse({"status": "already_running", "state": INGEST_STATE["eia"]}, status_code=409)
     asyncio.create_task(_run_tracked("eia", refresh_all()))
     return {"status": "started", "pipeline": "eia"}
+
+
+async def _refresh_omr_async() -> None:
+    """Run the synchronous omr.refresh job in a worker thread with its own DB conn."""
+    def _go():
+        conn = get_db()
+        try:
+            refresh_omr(conn)
+        finally:
+            conn.close()
+    await asyncio.to_thread(_go)
+
+
+@app.post("/api/ingest/omr")
+async def ingest_omr():
+    """Pull the latest free IEA OMR PDF, parse Tables 1/1a/1b, and upsert into
+    omr_monthly. Auto-discovers the URL from iea.org by default; override with
+    OMR_PDF_URL env var (or run pipelines/omr.py manually with --local-pdf)."""
+    if _ingest_busy("omr"):
+        return JSONResponse({"status": "already_running", "state": INGEST_STATE["omr"]}, status_code=409)
+    asyncio.create_task(_run_tracked("omr", _refresh_omr_async()))
+    return {"status": "started", "pipeline": "omr"}
 
 
 @app.post("/api/ingest/ais")

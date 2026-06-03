@@ -170,11 +170,26 @@ async def collect_positions(
                         }
                     elif mtype == "ShipStaticData":
                         ssd = (msg.get("Message") or {}).get("ShipStaticData") or {}
+                        # AIS Type 5 reports 4 reference-point dimensions:
+                        # A=bow, B=stern, C=port, D=starboard (meters from the
+                        # transponder antenna). Length = A+B, beam = C+D.
+                        # aisstream typically serializes as `Dimension: {A,B,C,D}`;
+                        # fall back to flat `DimensionA/B/C/D` if a future API
+                        # rev flattens the object.
+                        dim = ssd.get("Dimension") or {}
+                        dim_a = dim.get("A") if isinstance(dim, dict) else ssd.get("DimensionA")
+                        dim_b = dim.get("B") if isinstance(dim, dict) else ssd.get("DimensionB")
+                        dim_c = dim.get("C") if isinstance(dim, dict) else ssd.get("DimensionC")
+                        dim_d = dim.get("D") if isinstance(dim, dict) else ssd.get("DimensionD")
+                        length_m = (dim_a + dim_b) if (dim_a and dim_b) else None
+                        beam_m = (dim_c + dim_d) if (dim_c and dim_d) else None
                         static[mmsi] = {
                             "name": (ssd.get("Name") or "").strip() or None,
                             "destination": (ssd.get("Destination") or "").strip() or None,
                             "max_draught_m": ssd.get("MaximumStaticDraught"),
                             "imo": ssd.get("ImoNumber"),
+                            "length_m": length_m,
+                            "beam_m": beam_m,
                         }
 
         except asyncio.TimeoutError:
@@ -206,6 +221,8 @@ async def collect_positions(
             "max_draught_m": s.get("max_draught_m") or m.get("max_draught_m"),
             "destination": (s.get("destination")
                             or (m.get("destination") or "").strip() or None),
+            "length_m": s.get("length_m") or m.get("length_m"),
+            "beam_m": s.get("beam_m") or m.get("beam_m"),
         })
     return rows
 
@@ -217,6 +234,17 @@ def main() -> int:
     parser.add_argument("--duration-minutes", type=float, default=30.0)
     parser.add_argument("--output", required=True, type=lambda p: Path(p).expanduser(),
                         help="Output parquet path (overwritten on each run)")
+    parser.add_argument("--history-dir", type=lambda p: Path(p).expanduser(),
+                        help="If set, also append this run's snapshot under "
+                             "<history-dir>/source=aisstream/date=YYYY-MM-DD/HH-MM.parquet "
+                             "for backtest depth. The single --output file is "
+                             "still written for the live dashboard view.")
+    parser.add_argument("--max-age-days", type=float, default=7.0,
+                        help="Drop rows whose time_utc is older than this many "
+                             "days before write. Defense-in-depth against "
+                             "aisstream rebroadcasting stale cached fixes on "
+                             "reconnect (TDD §4.2.1.1 staleness filter). Set to "
+                             "a large number (e.g. 365) to effectively disable.")
     args = parser.parse_args()
 
     api_key = os.environ.get("AISSTREAM_API_KEY")
@@ -241,10 +269,47 @@ def main() -> int:
         log.error("no_positions_collected")
         return 1
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(rows)
+
+    # Staleness filter (TDD §4.2.1.1). The 30-min capture window means rows
+    # *should* already be fresh, but aisstream has been observed to rebroadcast
+    # cached last-known fixes during reconnects, and downstream consumers
+    # (counts, maps, region densities) shouldn't conflate live activity with
+    # weeks-old dots. Drop anything with time_utc older than --max-age-days.
+    if args.max_age_days is not None and not df.empty:
+        ts = pd.to_datetime(df["time_utc"], errors="coerce", utc=True)
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=args.max_age_days)
+        pre = len(df)
+        mask = ts.notna() & (ts >= cutoff)
+        df = df.loc[mask].reset_index(drop=True)
+        log.info("staleness_filter",
+                 max_age_days=args.max_age_days,
+                 cutoff_utc=str(cutoff),
+                 kept=len(df), dropped=pre - len(df))
+        if df.empty:
+            # Filtering everything out is almost certainly a bug — refusing to
+            # overwrite the dashboard's good snapshot with an empty one.
+            log.error("all_rows_filtered_as_stale",
+                      hint="capture window may have produced only stale rebroadcasts; "
+                           "skipping write to preserve last good snapshot")
+            return 1
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(args.output, index=False, engine="pyarrow")
     log.info("written", output=str(args.output), rows=len(df))
+
+    if args.history_dir is not None:
+        # Hive-style date partition + HH-MM file so each snapshot lands in its
+        # own parquet under positions/source=aisstream/. Pyarrow datasets can
+        # then range-scan with predicate pushdown for backtesting.
+        from datetime import datetime, timezone
+        ts = datetime.now(tz=timezone.utc)
+        hist_path = (args.history_dir / "source=aisstream"
+                                       / f"date={ts:%Y-%m-%d}"
+                                       / f"{ts:%H-%M}.parquet")
+        hist_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(hist_path, index=False, engine="pyarrow")
+        log.info("history_written", path=str(hist_path), rows=len(df))
     return 0
 
 

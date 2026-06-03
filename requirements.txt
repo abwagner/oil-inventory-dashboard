@@ -23,3 +23,8 @@ apscheduler>=3.10
 # S3-compatible storage backend (MinIO, AWS S3). Optional at runtime —
 # dashboard falls back to local filesystem when S3_BUCKET is unset.
 s3fs>=2024.1
+
+# Browser-fingerprinted HTTP client (curl-impersonate under the hood).
+# Used by pipelines/omr.py to bypass iea.org's Cloudflare bot detection
+# for OMR PDF auto-discovery. Falls back to plain `requests` if unavailable.
+curl-cffi>=0.7
